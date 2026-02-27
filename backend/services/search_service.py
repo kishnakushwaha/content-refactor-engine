@@ -2,7 +2,7 @@ import requests
 from config import Config
 import asyncio
 
-async def search_internet(queries: list[str], max_results_per_query: int = 3) -> list[str]:
+async def search_internet(queries: list[str], max_results_per_query: int = 7) -> list[str]:
     """
     Component 2: Internet Retrieval Engine
     Takes a list of search queries and returns a deduplicated list of URLs.

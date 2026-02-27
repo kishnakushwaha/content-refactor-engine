@@ -234,18 +234,34 @@ document.addEventListener('DOMContentLoaded', () => {
         else if (safety.toLowerCase().includes('medium')) riskBadge.classList.add('warn');
         else riskBadge.classList.add('safe');
 
+        // Plagiarism Risk Badge
+        const plagBadge = document.getElementById('plag-badge');
+        const plagRisk = report.plagiarism_risk || "--";
+        plagBadge.textContent = plagRisk;
+        plagBadge.className = 'badge';
+        if (plagRisk.toLowerCase().includes('high')) plagBadge.classList.add('risk');
+        else if (plagRisk.toLowerCase().includes('medium')) plagBadge.classList.add('warn');
+        else plagBadge.classList.add('safe');
+
         document.getElementById('idea-badge').textContent = report.idea_similarity || "--";
+        document.getElementById('value-badge').textContent = report.value_addition || "--";
 
-        // URL
-        const topRef = document.getElementById('top-ref-link');
-        const topUrl = report.top_match_url;
+        // SEO Score
+        document.getElementById('seo-score').textContent = report.seo_score || "--%";
+        document.getElementById('seo-fill').style.width = report.seo_score || "0%";
 
-        if (topUrl) {
-            topRef.textContent = topUrl;
-            topRef.href = topUrl;
+        // Matched References (top 5)
+        const refsList = document.getElementById('refs-list');
+        const refs = report.matched_references || [];
+        if (refs.length > 0) {
+            refsList.innerHTML = refs.map(ref =>
+                `<a href="${ref.url}" target="_blank" class="ref-link">
+                    <span class="ref-score">${ref.score}</span>
+                    <span class="ref-url">${ref.url}</span>
+                </a>`
+            ).join('');
         } else {
-            topRef.textContent = "None detected";
-            topRef.removeAttribute('href');
+            refsList.innerHTML = '<span class="text-muted">None detected</span>';
         }
 
         // Output HTML

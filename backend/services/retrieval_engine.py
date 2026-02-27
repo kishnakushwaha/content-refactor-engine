@@ -9,7 +9,7 @@ from utils.url_validator import is_safe_url
 # 1. Fingerprint Extractor
 # ==============================
 
-def extract_fingerprints(text: str, max_fingerprints=8):
+def extract_fingerprints(text: str, max_fingerprints=12):
     """
     Extract exact phrases from the article for plagiarism search.
     Uses sentence-based extraction (60-200 chars) as primary strategy.
@@ -107,7 +107,7 @@ async def search_google(queries):
             from googlesearch import search
             for q in queries:
                 try:
-                    for url in search(q, num_results=5, lang="en"):
+                    for url in search(q, num_results=10, lang="en"):
                         if is_safe_url(url):
                             urls.add(url)
                 except Exception as e:
@@ -177,7 +177,7 @@ def rank_urls(urls, article_text):
 # 5. Adaptive Scraping Controller
 # ==============================
 
-async def adaptive_scrape(urls, max_scrape=5):
+async def adaptive_scrape(urls, max_scrape=15):
     """Scrapes highest ranked URLs first."""
     scraped = []
     for url in urls[:max_scrape]:

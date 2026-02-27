@@ -537,18 +537,34 @@ document.addEventListener('DOMContentLoaded', () => {
         else if (safety.toLowerCase().includes('medium')) riskBadge.classList.add('warn');
         else riskBadge.classList.add('safe');
 
+        // Plagiarism Risk Badge
+        const plagBadge = document.getElementById('plag-badge');
+        const plagRisk = report.plagiarism_risk || "--";
+        plagBadge.textContent = plagRisk;
+        plagBadge.className = 'badge';
+        if (plagRisk.toLowerCase().includes('high')) plagBadge.classList.add('risk');
+        else if (plagRisk.toLowerCase().includes('medium')) plagBadge.classList.add('warn');
+        else plagBadge.classList.add('safe');
+
         document.getElementById('idea-badge').textContent = report.idea_similarity || "--";
+        document.getElementById('value-badge').textContent = report.value_addition || "--";
 
-        // URL
-        const topRef = document.getElementById('top-ref-link');
-        const topUrl = report.top_match_url;
+        // SEO Score
+        document.getElementById('seo-score').textContent = report.seo_score || "--%";
+        document.getElementById('seo-fill').style.width = report.seo_score || "0%";
 
-        if (topUrl) {
-            topRef.textContent = topUrl;
-            topRef.href = topUrl;
+        // Matched References (top 5)
+        const refsList = document.getElementById('refs-list');
+        const refs = report.matched_references || [];
+        if (refs.length > 0) {
+            refsList.innerHTML = refs.map(ref =>
+                `<a href="${ref.url}" target="_blank" class="ref-link">
+                    <span class="ref-score">${ref.score}</span>
+                    <span class="ref-url">${ref.url}</span>
+                </a>`
+            ).join('');
         } else {
-            topRef.textContent = "None detected";
-            topRef.removeAttribute('href');
+            refsList.innerHTML = '<span class="text-muted">None detected</span>';
         }
 
         // Output HTML
@@ -742,6 +758,13 @@ document.addEventListener('DOMContentLoaded', () => {
                                     <div class="fill" id="trust-fill"></div>
                                 </div>
                             </div>
+                            <div class="score-card">
+                                <h3>SEO Score</h3>
+                                <div class="score-value" id="seo-score">--%</div>
+                                <div class="score-bar">
+                                    <div class="fill" id="seo-fill"></div>
+                                </div>
+                            </div>
                         </div>
 
                         <div class="analysis-details">
@@ -750,12 +773,22 @@ document.addEventListener('DOMContentLoaded', () => {
                                 <span class="badge" id="risk-badge">--</span>
                             </div>
                             <div class="detail-row">
+                                <span class="label">Plagiarism Risk:</span>
+                                <span class="badge" id="plag-badge">--</span>
+                            </div>
+                            <div class="detail-row">
                                 <span class="label">Idea Similarity:</span>
                                 <span class="badge outline" id="idea-badge">--</span>
                             </div>
                             <div class="detail-row">
-                                <span class="label">Top Reference:</span>
-                                <a href="#" target="_blank" id="top-ref-link" class="truncate-link">None detected</a>
+                                <span class="label">Value Addition:</span>
+                                <span class="badge outline" id="value-badge">--</span>
+                            </div>
+                            <div class="detail-row refs-row">
+                                <span class="label">Matched References:</span>
+                                <div class="refs-list" id="refs-list">
+                                    <span class="text-muted">None detected</span>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -1228,7 +1261,7 @@ textarea::placeholder {
 
 .score-cards {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     gap: 1rem;
     margin-bottom: 2rem;
 }
@@ -1443,6 +1476,63 @@ textarea::placeholder {
         transform: translateX(0);
         opacity: 1;
     }
+}
+
+/* ========================
+   REFERENCE LIST
+   ======================== */
+
+.refs-row {
+    flex-direction: column !important;
+    gap: 0.5rem !important;
+}
+
+.refs-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    max-height: 180px;
+    overflow-y: auto;
+}
+
+.ref-link {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0.6rem;
+    background: rgba(0, 0, 0, 0.25);
+    border-radius: 6px;
+    text-decoration: none;
+    transition: background 0.2s;
+    border: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.ref-link:hover {
+    background: rgba(59, 130, 246, 0.15);
+}
+
+.ref-score {
+    background: var(--accent);
+    color: white;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+
+.ref-url {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 350px;
+}
+
+.text-muted {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
 }
 ```
 
@@ -1941,12 +2031,14 @@ async def process_article_controller(html_content: str, user_id: str = None, pro
     
     analysis = await analyze_originality(full_text, top_match, similarity_score)
     
-    # Step 5: Rewrite
+    # Step 5: Reference-Aware Rewrite
     if progress_callback:
-        await progress_callback("rewriting", "Analyzing for advanced rewording and paraphrasing...")
+        await progress_callback("rewriting", "Rewriting with maximum semantic distance from matched references...")
     
+    # Pass the matched reference text so the LLM can actively differentiate
+    reference_content = top_match.get("content", "") if top_match else None
     texts_to_rewrite = [n["text"] for n in nodes]
-    rewritten_texts = await rewrite_text_nodes(texts_to_rewrite)
+    rewritten_texts = await rewrite_text_nodes(texts_to_rewrite, reference_text=reference_content)
     
     for node, new_text in zip(nodes, rewritten_texts):
         node["element"].string = new_text
@@ -1961,6 +2053,12 @@ async def process_article_controller(html_content: str, user_id: str = None, pro
     report["urls_scanned"] = len(references)
     if top_match:
         report["top_match_url"] = top_match["url"]
+    
+    # Add top 5 matched reference URLs for richer frontend display
+    report["matched_references"] = [
+        {"url": ref["url"], "score": f"{int(ref['score'] * 100)}%"}
+        for ref in all_scores[:5]
+    ] if all_scores else []
 
     # Save to DB for history
     if user_id:
@@ -2074,26 +2172,34 @@ from config import Config
 import json
 import asyncio
 
-ANALYSIS_PROMPT = """You are an expert Google AdSense Evaluator.
-Evaluate the following user article against the top-matching internet reference article.
-The exact vector mathematical similarity score is {sim_pct:.1f}%.
+ANALYSIS_PROMPT = """You are an expert plagiarism detection and content quality analysis system, equivalent to Google AdSense's internal content evaluator.
+
+The exact mathematical cosine similarity score between the user's article and the top internet reference is {sim_pct:.1f}%.
 
 USER ARTICLE:
 {article}
 
-TOP REFERENCE (investigating for plagiarism/duplication):
+TOP MATCHING REFERENCE (investigating for plagiarism/duplication):
 {reference}
 
-Analyze:
-1. Idea Similarity (Low, Medium, High)
-2. Value Addition (Does the user's article add unique perspectives or examples?)
-3. AdSense Risk (Low, Medium, High)
+Perform a comprehensive multi-factor analysis across these 9 dimensions:
 
-Return ONLY a JSON dictionary with these keys: "idea_similarity", "value_addition", "adsense_risk", "analysis_summary"."""
+1. **Semantic Similarity** (Low/Medium/High) — How closely does the text match the reference in meaning?
+2. **Idea Similarity** (Low/Medium/High) — Are the core ideas/arguments the same, even if words differ?
+3. **Plagiarism Risk** (Low/Medium/High) — Risk of being flagged by automated plagiarism detectors
+4. **Originality Score** (0-100) — How original is the user's content overall?
+5. **Value Addition** (Low/Medium/High) — Does the user add unique perspectives, examples, or depth?
+6. **SEO Quality** (0-100) — Rate the content's SEO strength (headings, structure, keywords, readability)
+7. **Trust Score** (1-10) — Overall trustworthiness and publisher credibility signal
+8. **AdSense Risk** (Low/Medium/High) — Risk of Google AdSense rejection or thin content penalty
+9. **Analysis Summary** — A 2-3 sentence expert summary of the content's strengths and weaknesses
+
+Return ONLY a valid JSON object with these exact keys:
+{{"semantic_similarity": "...", "idea_similarity": "...", "plagiarism_risk": "...", "originality_score": "...", "value_addition": "...", "seo_score": "...", "trust_score": "...", "adsense_risk": "...", "analysis_summary": "..."}}"""
 
 
 def _call_openai_compatible(api_url: str, api_key: str, model: str, prompt: str) -> dict:
-    """Generic OpenAI-compatible API caller (works for DeepSeek + Groq)."""
+    """Generic OpenAI-compatible API caller (works for DeepSeek + Groq + OpenRouter)."""
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
@@ -2120,14 +2226,14 @@ def _call_openai_compatible(api_url: str, api_key: str, model: str, prompt: str)
 
 async def analyze_originality(article: str, top_reference: dict, similarity_score: float) -> dict:
     """
-    CRE Analysis Engine — DeepSeek primary, Groq fallback.
-    Uses both to deeply analyze Idea Similarity and Value Addition.
+    CRE Multi-Factor Analysis Engine — DeepSeek primary, Groq + OpenRouter fallback.
+    Returns 9-dimension analysis for comprehensive CRE scoring.
     """
     ref_dict = top_reference or {}
     prompt = ANALYSIS_PROMPT.format(
         sim_pct=similarity_score * 100,
-        article=article[:1500],
-        reference=ref_dict.get('content', 'No reference article found.')[:1500]
+        article=article[:2000],
+        reference=ref_dict.get('content', 'No reference article found.')[:2000]
     )
 
     # Try DeepSeek first
@@ -2183,8 +2289,13 @@ async def analyze_originality(article: str, top_reference: dict, similarity_scor
 
     print("[Analysis] All LLMs failed — returning basic analysis")
     return {
+        "semantic_similarity": "Unknown",
         "idea_similarity": "Unknown",
+        "plagiarism_risk": "Unknown",
+        "originality_score": "50",
         "value_addition": "Unknown",
+        "seo_score": "50",
+        "trust_score": "5",
         "adsense_risk": "Unknown",
         "analysis_summary": "Analysis unavailable — no LLM API responded."
     }
@@ -2329,7 +2440,7 @@ from utils.url_validator import is_safe_url
 # 1. Fingerprint Extractor
 # ==============================
 
-def extract_fingerprints(text: str, max_fingerprints=8):
+def extract_fingerprints(text: str, max_fingerprints=12):
     """
     Extract exact phrases from the article for plagiarism search.
     Uses sentence-based extraction (60-200 chars) as primary strategy.
@@ -2427,7 +2538,7 @@ async def search_google(queries):
             from googlesearch import search
             for q in queries:
                 try:
-                    for url in search(q, num_results=5, lang="en"):
+                    for url in search(q, num_results=10, lang="en"):
                         if is_safe_url(url):
                             urls.add(url)
                 except Exception as e:
@@ -2497,7 +2608,7 @@ def rank_urls(urls, article_text):
 # 5. Adaptive Scraping Controller
 # ==============================
 
-async def adaptive_scrape(urls, max_scrape=5):
+async def adaptive_scrape(urls, max_scrape=15):
     """Scrapes highest ranked URLs first."""
     scraped = []
     for url in urls[:max_scrape]:
@@ -2552,43 +2663,46 @@ genai.configure(api_key=Config.GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-2.0-flash')
 
 
-def _rewrite_via_groq(texts: list[str]) -> list[str]:
-    """Groq fallback using llama-3.3-70b-versatile (14,400 free RPD)."""
-    groq_key = Config.GROQ_API_KEY
-    if not groq_key:
-        return texts
-    
+def _build_rewrite_prompt(texts: list[str], reference_text: str = None) -> str:
+    """Build the reference-aware, SEO-optimized rewrite prompt."""
     input_json = json.dumps({str(i): text for i, text in enumerate(texts)})
-    prompt = f"""Rewrite the following blocks of text in a completely original, human-sounding way.
-Keep the same structural meaning, but ensure high uniqueness.
+    
+    ref_section = ""
+    if reference_text:
+        ref_section = f"""
+CRITICAL CONTEXT — The text below was flagged as semantically similar to the following reference.
+You MUST actively increase the semantic distance from this reference while preserving the core meaning.
 
+MATCHED REFERENCE TEXT (avoid resembling this):
+{reference_text[:2000]}
+
+DIFFERENTIATION STRATEGY:
+- Use completely different sentence structures and reasoning patterns
+- Replace generic phrasing with original insights and unique examples
+- Restructure the logical flow and argument ordering
+- Add value through original analysis the reference lacks
+"""
+
+    return f"""You are a professional content rewriter specializing in originality and SEO optimization.
+
+Rewrite the following blocks of text so that they:
+1. Are HIGHLY ORIGINAL — use different reasoning structures, vocabulary, and flow
+2. Sound naturally human-written — no robotic or formulaic patterns
+3. Improve SEO ranking — use clear headings, transition words, and scannable structure
+4. Improve reader engagement and clarity
+5. Improve AdSense approval probability — add depth and value
+6. Preserve the core factual meaning accurately
+{ref_section}
 You MUST output a valid JSON array of strings in the exact same order as the input.
 I am providing {len(texts)} blocks. I expect exactly a JSON list of length {len(texts)}.
 
 INPUT:
 {input_json}"""
 
-    headers = {
-        "Authorization": f"Bearer {groq_key}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": "llama-3.3-70b-versatile",
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.7
-    }
-    
-    response = requests.post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        headers=headers,
-        json=payload,
-        timeout=30
-    )
-    response.raise_for_status()
-    data = response.json()
-    content = data["choices"][0]["message"]["content"].strip()
-    
-    # Strip markdown fences
+
+def _parse_llm_json(content: str, expected_len: int) -> list[str] | None:
+    """Parse JSON array from LLM response, handling markdown fences."""
+    content = content.strip()
     if content.startswith("```json"):
         content = content[7:]
     if content.startswith("```"):
@@ -2596,30 +2710,81 @@ INPUT:
     if content.endswith("```"):
         content = content[:-3]
     
-    rewritten = json.loads(content.strip())
-    if isinstance(rewritten, list) and len(rewritten) == len(texts):
-        return [str(item) for item in rewritten]
-    return texts
+    parsed = json.loads(content.strip())
+    if isinstance(parsed, list) and len(parsed) == expected_len:
+        return [str(item) for item in parsed]
+    return None
 
 
-async def rewrite_text_nodes(texts: list[str]) -> list[str]:
+def _rewrite_via_groq(texts: list[str], reference_text: str = None) -> list[str]:
+    """Groq fallback using llama-3.3-70b-versatile."""
+    groq_key = Config.GROQ_API_KEY
+    if not groq_key:
+        return texts
+    
+    prompt = _build_rewrite_prompt(texts, reference_text)
+    headers = {
+        "Authorization": f"Bearer {groq_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.75
+    }
+    
+    response = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers=headers,
+        json=payload,
+        timeout=45
+    )
+    response.raise_for_status()
+    content = response.json()["choices"][0]["message"]["content"]
+    
+    result = _parse_llm_json(content, len(texts))
+    return result if result else texts
+
+
+def _rewrite_via_openrouter(texts: list[str], reference_text: str = None) -> list[str]:
+    """OpenRouter fallback using free llama model."""
+    openrouter_key = Config.OPENROUTER_API_KEY
+    if not openrouter_key or "sk-or" not in openrouter_key:
+        return texts
+    
+    prompt = _build_rewrite_prompt(texts, reference_text)
+    headers = {
+        "Authorization": f"Bearer {openrouter_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "meta-llama/llama-3.3-70b-instruct:free",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.75
+    }
+    
+    resp = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers=headers,
+        json=payload,
+        timeout=45
+    )
+    resp.raise_for_status()
+    content = resp.json()["choices"][0]["message"]["content"]
+    
+    result = _parse_llm_json(content, len(texts))
+    return result if result else texts
+
+
+async def rewrite_text_nodes(texts: list[str], reference_text: str = None) -> list[str]:
     """
-    Rewrite Engine — Gemini primary, Groq fallback.
-    Takes text nodes, rewrites them for uniqueness, returns same-length array.
+    Reference-Aware Rewrite Engine — Gemini primary, Groq + OpenRouter fallback.
+    Takes text nodes + matched reference, rewrites for maximum originality.
     """
     if not texts:
         return []
 
-    input_json = json.dumps({str(i): text for i, text in enumerate(texts)})
-    
-    prompt = f"""Rewrite the following blocks of text in a completely original, human-sounding way.
-Keep the same structural meaning, but ensure high uniqueness.
-
-You MUST output a valid JSON array of strings in the exact same order as the input.
-I am providing {len(texts)} blocks. I expect exactly a JSON list of length {len(texts)}.
-
-INPUT:
-{input_json}"""
+    prompt = _build_rewrite_prompt(texts, reference_text)
 
     # Try Gemini first (2 attempts)
     for attempt in range(2):
@@ -2630,14 +2795,12 @@ INPUT:
                 generation_config={"response_mime_type": "application/json"}
             )
             
-            result_text = response.text.strip()
-            rewritten_array = json.loads(result_text)
-            
-            if isinstance(rewritten_array, list) and len(rewritten_array) == len(texts):
+            result = _parse_llm_json(response.text, len(texts))
+            if result:
                 print("[Rewrite] Gemini succeeded")
-                return [str(item) for item in rewritten_array]
+                return result
             else:
-                print(f"[Rewrite] Gemini length mismatch: expected {len(texts)}, got {len(rewritten_array)}")
+                print(f"[Rewrite] Gemini length mismatch on attempt {attempt+1}")
         except Exception as e:
             print(f"[Rewrite] Gemini error (attempt {attempt+1}): {e}")
             
@@ -2646,7 +2809,7 @@ INPUT:
     # Fallback to Groq
     try:
         print("[Rewrite] Trying Groq fallback...")
-        result = await asyncio.to_thread(_rewrite_via_groq, texts)
+        result = await asyncio.to_thread(_rewrite_via_groq, texts, reference_text)
         if result != texts:
             print("[Rewrite] Groq succeeded")
             return result
@@ -2655,37 +2818,11 @@ INPUT:
     
     # Fallback to OpenRouter
     try:
-        openrouter_key = Config.OPENROUTER_API_KEY
-        if openrouter_key and "sk-or" in openrouter_key:
-            print("[Rewrite] Trying OpenRouter fallback...")
-            headers = {
-                "Authorization": f"Bearer {openrouter_key}",
-                "Content-Type": "application/json"
-            }
-            payload = {
-                "model": "meta-llama/llama-3.3-70b-instruct:free",
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.7
-            }
-            resp = await asyncio.to_thread(
-                requests.post,
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=30
-            )
-            resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"].strip()
-            if content.startswith("```json"):
-                content = content[7:]
-            if content.startswith("```"):
-                content = content[3:]
-            if content.endswith("```"):
-                content = content[:-3]
-            rewritten = json.loads(content.strip())
-            if isinstance(rewritten, list) and len(rewritten) == len(texts):
-                print("[Rewrite] OpenRouter succeeded")
-                return [str(item) for item in rewritten]
+        print("[Rewrite] Trying OpenRouter fallback...")
+        result = await asyncio.to_thread(_rewrite_via_openrouter, texts, reference_text)
+        if result != texts:
+            print("[Rewrite] OpenRouter succeeded")
+            return result
     except Exception as e:
         print(f"[Rewrite] OpenRouter fallback failed: {e}")
     
@@ -2697,29 +2834,101 @@ INPUT:
 ### `backend/services/scoring_service.py`
 
 ```python
-def generate_cre_report(similarity_score: float, deepseek_analysis: dict) -> dict:
+def _parse_score(value, default=50):
+    """Safely parse a numeric score from LLM output."""
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        # Extract digits from strings like "75%" or "75/100" or "75"
+        import re
+        match = re.search(r'(\d+)', str(value))
+        if match:
+            return min(100, int(match.group(1)))
+    return default
+
+
+def _level_to_score(level: str, default=50) -> int:
+    """Convert Low/Medium/High text to a numeric score."""
+    level_map = {
+        "low": 90,
+        "medium": 60,
+        "high": 30,
+        "very low": 95,
+        "very high": 15,
+        "none": 100,
+    }
+    return level_map.get(str(level).lower().strip(), default)
+
+
+def generate_cre_report(similarity_score: float, analysis: dict) -> dict:
     """
-    Component 8: CRE Scoring Engine
-    Aggregates the math and the LLM reasoning to produce the final comprehensive report.
-    """
-    # Inverse the mathematical similarity to get an originality integer
-    originality_score = max(0, int((1.0 - similarity_score) * 100))
-    sem_sim_percent = int(similarity_score * 100)
+    CRE Multi-Factor Scoring Engine (V5)
     
-    # Calculate a rough /10 trust score based on AI logic
-    risk = deepseek_analysis.get("adsense_risk", "Unknown").lower()
-    trust = 9 if risk == "low" else (5 if risk == "medium" else 2)
-    if sem_sim_percent > 40: trust -= 2
-    trust = max(1, trust)
+    Combines mathematical similarity with LLM-assessed qualitative scores
+    to produce a comprehensive, production-grade content quality report.
+    """
+    # ---- Mathematical Scores ----
+    sem_sim_percent = int(similarity_score * 100)
+    math_originality = max(0, 100 - sem_sim_percent)
+    
+    # ---- LLM-Assessed Scores ----
+    idea_score = _level_to_score(analysis.get("idea_similarity", "Medium"))
+    risk_score = _level_to_score(analysis.get("plagiarism_risk", "Medium"))
+    value_score = _level_to_score(analysis.get("value_addition", "Medium"), default=50)
+    # Invert value: High value_addition = good = high score
+    value_score = 100 - _level_to_score(analysis.get("value_addition", "Medium"), default=50)
+    if analysis.get("value_addition", "").lower() == "high":
+        value_score = 85
+    elif analysis.get("value_addition", "").lower() == "medium":
+        value_score = 55
+    elif analysis.get("value_addition", "").lower() == "low":
+        value_score = 25
+    
+    llm_originality = _parse_score(analysis.get("originality_score", "50"))
+    seo_score = _parse_score(analysis.get("seo_score", "50"))
+    llm_trust = _parse_score(analysis.get("trust_score", "5"), default=5)
+    
+    # ---- Composite Originality Score ----
+    # Weighted average: math similarity (40%) + LLM originality (30%) + idea uniqueness (15%) + value (15%)
+    composite_originality = int(
+        (math_originality * 0.40) +
+        (llm_originality * 0.30) +
+        (idea_score * 0.15) +
+        (value_score * 0.15)
+    )
+    composite_originality = max(0, min(100, composite_originality))
+    
+    # ---- Composite Trust Score ----
+    # Normalize trust to /10 scale using composite originality
+    if llm_trust > 10:
+        llm_trust = min(10, llm_trust // 10)
+    trust_from_originality = max(1, composite_originality // 10)
+    trust_score = int((llm_trust * 0.6) + (trust_from_originality * 0.4))
+    trust_score = max(1, min(10, trust_score))
+    
+    # ---- Plagiarism Risk Level ----
+    plag_risk = analysis.get("plagiarism_risk", "Unknown")
+    if plag_risk == "Unknown":
+        if sem_sim_percent > 70:
+            plag_risk = "High"
+        elif sem_sim_percent > 40:
+            plag_risk = "Medium"
+        else:
+            plag_risk = "Low"
+    
+    # ---- AdSense Safety ----
+    adsense = analysis.get("adsense_risk", "Unknown")
 
     report = {
         "similarity_score": f"{sem_sim_percent}%",
-        "originality_score": f"{originality_score}%",
-        "trust_score": f"{trust}/10",
-        "idea_similarity": deepseek_analysis.get("idea_similarity", "Unknown"),
-        "value_addition": deepseek_analysis.get("value_addition", "Unknown"),
-        "adsense_safety": deepseek_analysis.get("adsense_risk", "Unknown"),
-        "ai_rationale": deepseek_analysis.get("analysis_summary", "No rationale generated.")
+        "originality_score": f"{composite_originality}%",
+        "trust_score": f"{trust_score}/10",
+        "seo_score": f"{seo_score}%",
+        "plagiarism_risk": plag_risk,
+        "idea_similarity": analysis.get("idea_similarity", "Unknown"),
+        "value_addition": analysis.get("value_addition", "Unknown"),
+        "adsense_safety": adsense,
+        "ai_rationale": analysis.get("analysis_summary", "No rationale generated.")
     }
     
     return report
@@ -2785,7 +2994,7 @@ import requests
 from config import Config
 import asyncio
 
-async def search_internet(queries: list[str], max_results_per_query: int = 3) -> list[str]:
+async def search_internet(queries: list[str], max_results_per_query: int = 7) -> list[str]:
     """
     Component 2: Internet Retrieval Engine
     Takes a list of search queries and returns a deduplicated list of URLs.

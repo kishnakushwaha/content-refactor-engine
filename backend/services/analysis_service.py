@@ -4,26 +4,34 @@ from config import Config
 import json
 import asyncio
 
-ANALYSIS_PROMPT = """You are an expert Google AdSense Evaluator.
-Evaluate the following user article against the top-matching internet reference article.
-The exact vector mathematical similarity score is {sim_pct:.1f}%.
+ANALYSIS_PROMPT = """You are an expert plagiarism detection and content quality analysis system, equivalent to Google AdSense's internal content evaluator.
+
+The exact mathematical cosine similarity score between the user's article and the top internet reference is {sim_pct:.1f}%.
 
 USER ARTICLE:
 {article}
 
-TOP REFERENCE (investigating for plagiarism/duplication):
+TOP MATCHING REFERENCE (investigating for plagiarism/duplication):
 {reference}
 
-Analyze:
-1. Idea Similarity (Low, Medium, High)
-2. Value Addition (Does the user's article add unique perspectives or examples?)
-3. AdSense Risk (Low, Medium, High)
+Perform a comprehensive multi-factor analysis across these 9 dimensions:
 
-Return ONLY a JSON dictionary with these keys: "idea_similarity", "value_addition", "adsense_risk", "analysis_summary"."""
+1. **Semantic Similarity** (Low/Medium/High) — How closely does the text match the reference in meaning?
+2. **Idea Similarity** (Low/Medium/High) — Are the core ideas/arguments the same, even if words differ?
+3. **Plagiarism Risk** (Low/Medium/High) — Risk of being flagged by automated plagiarism detectors
+4. **Originality Score** (0-100) — How original is the user's content overall?
+5. **Value Addition** (Low/Medium/High) — Does the user add unique perspectives, examples, or depth?
+6. **SEO Quality** (0-100) — Rate the content's SEO strength (headings, structure, keywords, readability)
+7. **Trust Score** (1-10) — Overall trustworthiness and publisher credibility signal
+8. **AdSense Risk** (Low/Medium/High) — Risk of Google AdSense rejection or thin content penalty
+9. **Analysis Summary** — A 2-3 sentence expert summary of the content's strengths and weaknesses
+
+Return ONLY a valid JSON object with these exact keys:
+{{"semantic_similarity": "...", "idea_similarity": "...", "plagiarism_risk": "...", "originality_score": "...", "value_addition": "...", "seo_score": "...", "trust_score": "...", "adsense_risk": "...", "analysis_summary": "..."}}"""
 
 
 def _call_openai_compatible(api_url: str, api_key: str, model: str, prompt: str) -> dict:
-    """Generic OpenAI-compatible API caller (works for DeepSeek + Groq)."""
+    """Generic OpenAI-compatible API caller (works for DeepSeek + Groq + OpenRouter)."""
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
@@ -50,14 +58,14 @@ def _call_openai_compatible(api_url: str, api_key: str, model: str, prompt: str)
 
 async def analyze_originality(article: str, top_reference: dict, similarity_score: float) -> dict:
     """
-    CRE Analysis Engine — DeepSeek primary, Groq fallback.
-    Uses both to deeply analyze Idea Similarity and Value Addition.
+    CRE Multi-Factor Analysis Engine — DeepSeek primary, Groq + OpenRouter fallback.
+    Returns 9-dimension analysis for comprehensive CRE scoring.
     """
     ref_dict = top_reference or {}
     prompt = ANALYSIS_PROMPT.format(
         sim_pct=similarity_score * 100,
-        article=article[:1500],
-        reference=ref_dict.get('content', 'No reference article found.')[:1500]
+        article=article[:2000],
+        reference=ref_dict.get('content', 'No reference article found.')[:2000]
     )
 
     # Try DeepSeek first
@@ -113,8 +121,13 @@ async def analyze_originality(article: str, top_reference: dict, similarity_scor
 
     print("[Analysis] All LLMs failed — returning basic analysis")
     return {
+        "semantic_similarity": "Unknown",
         "idea_similarity": "Unknown",
+        "plagiarism_risk": "Unknown",
+        "originality_score": "50",
         "value_addition": "Unknown",
+        "seo_score": "50",
+        "trust_score": "5",
         "adsense_risk": "Unknown",
         "analysis_summary": "Analysis unavailable — no LLM API responded."
     }

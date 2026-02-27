@@ -107,12 +107,14 @@ async def process_article_controller(html_content: str, user_id: str = None, pro
     
     analysis = await analyze_originality(full_text, top_match, similarity_score)
     
-    # Step 5: Rewrite
+    # Step 5: Reference-Aware Rewrite
     if progress_callback:
-        await progress_callback("rewriting", "Analyzing for advanced rewording and paraphrasing...")
+        await progress_callback("rewriting", "Rewriting with maximum semantic distance from matched references...")
     
+    # Pass the matched reference text so the LLM can actively differentiate
+    reference_content = top_match.get("content", "") if top_match else None
     texts_to_rewrite = [n["text"] for n in nodes]
-    rewritten_texts = await rewrite_text_nodes(texts_to_rewrite)
+    rewritten_texts = await rewrite_text_nodes(texts_to_rewrite, reference_text=reference_content)
     
     for node, new_text in zip(nodes, rewritten_texts):
         node["element"].string = new_text
@@ -127,6 +129,12 @@ async def process_article_controller(html_content: str, user_id: str = None, pro
     report["urls_scanned"] = len(references)
     if top_match:
         report["top_match_url"] = top_match["url"]
+    
+    # Add top 5 matched reference URLs for richer frontend display
+    report["matched_references"] = [
+        {"url": ref["url"], "score": f"{int(ref['score'] * 100)}%"}
+        for ref in all_scores[:5]
+    ] if all_scores else []
 
     # Save to DB for history
     if user_id:

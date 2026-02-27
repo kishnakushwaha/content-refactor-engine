@@ -12,3 +12,4 @@ trafilatura
 google-generativeai
 googlesearch-python
 gunicorn
+mmh3

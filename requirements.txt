@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+python-dotenv
+beautifulsoup4
+lxml
+openai
+groq
+pydantic

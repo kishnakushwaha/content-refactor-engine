@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+python-dotenv
+beautifulsoup4
+lxml
+requests
+numpy
+scikit-learn
+sentence-transformers
+duckduckgo-search
+trafilatura
+google-generativeai
+googlesearch-python
+gunicorn

@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: cre-saas
+    # Use python environment
+    runtime: python
+    # We define the build and start commands explicitly
+    buildCommand: "./build.sh"
+    startCommand: "./start.sh"
+    # Choose region
+    region: ohio
+    # Free tier or starter
+    plan: free
+    # Environment variables required for the app to function
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: HUGGINGFACE_API_KEY
+        sync: false
+      - key: GOOGLE_CX_ID
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: FREE_PLAN_MAX_WORDS
+        value: 3000
+      - key: FREE_PLAN_MAX_REQUESTS_PER_DAY
+        value: 10
+      - key: PYTHON_VERSION
+        value: 3.10.12
+    # Optional: If you upgrade to a paid Render plan, you can attach a persistent disk for the SQLite DB to survive redeploys.
+    # disk:
+    #   name: cre-data
+    #   mountPath: /opt/render/project/src/database
+    #   sizeGB: 1

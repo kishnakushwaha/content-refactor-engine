@@ -52,11 +52,13 @@ content_refactor_engine/
 │   ├── models
 │   │   ├── article_model.py
 │   │   ├── database.py
+│   │   ├── index_db.py
 │   │   └── report_model.py
 │   ├── requirements.txt
 │   ├── services
 │   │   ├── analysis_service.py
 │   │   ├── embedding_service.py
+│   │   ├── fingerprint_engine.py
 │   │   ├── limit_service.py
 │   │   ├── query_generator.py
 │   │   ├── retrieval_engine.py
@@ -78,6 +80,42 @@ content_refactor_engine/
 ├── database/
 │   └── cre.db
 ```
+
+### 📁 Module Descriptions
+
+#### 🌐 Frontend (`frontend/`)
+- **`index.html`**: The main user dashboard where they paste their article content.
+- **`styles.css`**: All the styling for the application, including the "shimmer/skeleton" loading animations and the layout of the split-pane report view.
+- **`app.js`**: The vanilla JavaScript logic that handles sending data to the backend, listening to the real-time Server-Sent Events (SSE) stream, and dynamically updating the UI progress bar.
+
+#### 🗄️ Database (`database/`)
+- **`cre.db`**: The single, portable SQLite3 database file that holds absolutely everything: user accounts, article histories (original vs rewritten content), and the local fingerprint plagiarism index.
+
+#### ⚙️ Backend (`backend/`)
+**1. Core Config & Entry Points**
+- **`main.py`**: The entry point to the FastAPI application. It wires up CORS, the global exception handler, rate limiting, and attaches the routing files.
+- **`.env`**: Stores all of your secret API keys (Gemini, OpenRouter, DeepSeek, Groq).
+- **`config.py`**: Loads the `.env` variables into Python memory safely using Pydantic Settings.
+
+**2. Models & Database (`backend/models/`)**
+- **`database.py`**: Handles connecting to the `database/cre.db` SQLite file securely.
+- **`article_model.py` / `report_model.py`**: Pydantic schemas (data shapes) that define exactly what data the frontend must send to the backend, and what data the backend will return.
+- **`index_db.py`**: Houses the table structures for the new `indexed_documents` and `fingerprints` tables.
+
+**3. API Routes (`backend/api/`)**
+- **`controllers.py`**: The main traffic cop. It receives the HTTP request from the frontend and orchestrates the entire pipeline: Scraping -> Embedding -> Analysis -> Rewriting. It also streams the SSE updates back to the browser.
+- **`auth_middleware.py`**: Checks if the user has an active API key or free trial limit remaining before letting them hit the expensive LLM endpoints.
+- **`limits.py` & `usage_tracker.py`**: Enforces rate limiting (e.g., max 5 requests per day for free users) and tracks character counts in the SQLite database.
+
+**4. The Pipeline Services (`backend/services/`)**
+- **`query_generation.py`**: Uses DeepSeek/Groq to read the user's input article and figure out the 3 most important keyword search queries to test it against the internet.
+- **`search_service.py`**: Takes those queries and searches them on Google Custom Search API or DuckDuckGo.
+- **`scraper_service.py`**: Uses `Trafilatura` to visit the URLs found by the search service, bypass anti-bot protections, and extract the raw, readable text from those live competitor websites.
+- **`embedding_service.py`**: Converts both the user's article and the scraped competitor articles into dense mathematical vectors (using a HuggingFace `sentence-transformers` model).
+- **`similarity.py`**: Performs O(N x M) Cosine Similarity Math. It compares the vectors from the step above to generate a mathematical percentage.
+- **`analysis_service.py`**: Hands the text over to your Heavy Reasoner LLMs (DeepSeek -> Groq -> OpenRouter) to grade it.
+- **`rewrite_service.py`**: The final step. Hands the text to your Fast Writer LLMs (Gemini -> Groq -> OpenRouter) to completely refactor the sentence structures.
+- **`fingerprint_engine.py`**: A fast algorithmic chunker that chops text into 5-word shingles and saves them in the database for instant offline plagiarism matching.
 
 ---
 
@@ -102,6 +140,194 @@ cd ..
 mkdir -p database
 echo "Build complete."
 
+```
+
+### `compare_articles.py`
+
+```python
+import sqlite3
+import difflib
+import sys
+import os
+
+DB_PATH = os.path.join(os.path.dirname(__file__), 'database', 'cre.db')
+OUTPUT_HTML = os.path.join(os.path.dirname(__file__), 'diff_output.html')
+
+def generate_diff(article_id=None):
+    if not os.path.exists(DB_PATH):
+        print(f"Database not found at {DB_PATH}")
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    if article_id:
+        cursor.execute("SELECT id, original_content, rewritten_content FROM articles WHERE id = ?", (article_id,))
+    else:
+        # Fetch the most recent article
+        cursor.execute("SELECT id, original_content, rewritten_content FROM articles ORDER BY id DESC LIMIT 1")
+
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        print("No articles found in the database.")
+        return
+
+    art_id, original, rewritten = row
+
+    if not original:
+        original = ""
+    if not rewritten:
+        rewritten = ""
+
+    # Generate HTML diff
+    html_diff = difflib.HtmlDiff(wrapcolumn=80)
+    diff_table = html_diff.make_file(
+        original.splitlines(),
+        rewritten.splitlines(),
+        fromdesc=f"Original Content (Article ID {art_id})",
+        todesc=f"Rewritten Content (Article ID {art_id})",
+        context=True
+    )
+
+    with open(OUTPUT_HTML, 'w', encoding='utf-8') as f:
+        f.write(diff_table)
+
+    print(f"Diff successfully generated for Article ID: {art_id}")
+    print(f"Open this file in your browser to view the comparison: file://{os.path.abspath(OUTPUT_HTML)}")
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        try:
+            art_id = int(sys.argv[1])
+            generate_diff(art_id)
+        except ValueError:
+            print("Please provide a valid numeric Article ID.")
+    else:
+        generate_diff()
+
+```
+
+### `diff_output.html`
+
+```html
+
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+          "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+<html>
+
+<head>
+    <meta http-equiv="Content-Type"
+          content="text/html; charset=utf-8" />
+    <title></title>
+    <style type="text/css">
+        table.diff {font-family: Menlo, Consolas, Monaco, Liberation Mono, Lucida Console, monospace; border:medium}
+        .diff_header {background-color:#e0e0e0}
+        td.diff_header {text-align:right}
+        .diff_next {background-color:#c0c0c0}
+        .diff_add {background-color:#aaffaa}
+        .diff_chg {background-color:#ffff77}
+        .diff_sub {background-color:#ffaaaa}
+    </style>
+</head>
+
+<body>
+    
+    <table class="diff" id="difflib_chg_to0__top"
+           cellspacing="0" cellpadding="0" rules="groups" >
+        <colgroup></colgroup> <colgroup></colgroup> <colgroup></colgroup>
+        <colgroup></colgroup> <colgroup></colgroup> <colgroup></colgroup>
+        <thead><tr><th class="diff_next"><br /></th><th colspan="2" class="diff_header">Original Content (Article ID 1)</th><th class="diff_next"><br /></th><th colspan="2" class="diff_header">Rewritten Content (Article ID 1)</th></tr></thead>
+        <tbody>
+            <tr><td class="diff_next" id="difflib_chg_to0__0"><a href="#difflib_chg_to0__top">t</a></td><td class="diff_header" id="from0_1">1</td><td nowrap="nowrap"><span class="diff_sub">How&nbsp;to&nbsp;Pick&nbsp;the&nbsp;Right&nbsp;AI&nbsp;Model&nbsp;for&nbsp;Your&nbsp;Project</span></td><td class="diff_next"><a href="#difflib_chg_to0__top">t</a></td><td class="diff_header" id="to0_1">1</td><td nowrap="nowrap"><span class="diff_add">Choosing&nbsp;the&nbsp;Ideal&nbsp;AI&nbsp;Model&nbsp;for&nbsp;Your&nbsp;Project:&nbsp;A&nbsp;Comprehensive&nbsp;Guide</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header" id="from0_2">2</td><td nowrap="nowrap"><span class="diff_sub">There&nbsp;is&nbsp;a&nbsp;specific&nbsp;kind&nbsp;of&nbsp;paralysis&nbsp;that&nbsp;hits&nbsp;every&nbsp;Data&nbsp;Scientist&nbsp;when&nbsp;they&nbsp;o</span></td><td class="diff_next"></td><td class="diff_header" id="to0_2">2</td><td nowrap="nowrap"><span class="diff_add">Data&nbsp;scientists&nbsp;often&nbsp;find&nbsp;themselves&nbsp;overwhelmed&nbsp;by&nbsp;the&nbsp;plethora&nbsp;of&nbsp;AI&nbsp;models&nbsp;a</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">pen&nbsp;Hugging&nbsp;Face&nbsp;or&nbsp;the&nbsp;OpenAI&nbsp;docs&nbsp;today.&nbsp;It&nbsp;used&nbsp;to&nbsp;be&nbsp;a&nbsp;choice&nbsp;between&nbsp;a&nbsp;Line</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">vailable&nbsp;today,&nbsp;from&nbsp;massive&nbsp;API-based&nbsp;language&nbsp;models&nbsp;to&nbsp;agile&nbsp;local&nbsp;models&nbsp;and</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">ar&nbsp;Regression&nbsp;and&nbsp;a&nbsp;Random&nbsp;Forest.&nbsp;Now?&nbsp;You&nbsp;have&nbsp;to&nbsp;choose&nbsp;between&nbsp;massive&nbsp;API-b</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">&nbsp;autonomous&nbsp;agents,&nbsp;making&nbsp;it&nbsp;challenging&nbsp;to&nbsp;select&nbsp;the&nbsp;most&nbsp;suitable&nbsp;one&nbsp;for&nbsp;th</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">ased&nbsp;LLMs,&nbsp;nimble&nbsp;local&nbsp;models,&nbsp;multimodal&nbsp;giants,&nbsp;and&nbsp;autonomous&nbsp;agents.&nbsp;So,&nbsp;le</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">eir&nbsp;project.</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">t’s&nbsp;understand&nbsp;how&nbsp;to&nbsp;pick&nbsp;the&nbsp;right&nbsp;AI&nbsp;model&nbsp;for&nbsp;your&nbsp;project.</span></td><td class="diff_next"></td><td class="diff_header"></td><td nowrap="nowrap">&nbsp;</td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header" id="from0_3">3</td><td nowrap="nowrap"><span class="diff_sub">How&nbsp;to&nbsp;Pick&nbsp;the&nbsp;Right&nbsp;AI&nbsp;Model&nbsp;for&nbsp;Your&nbsp;Project</span></td><td class="diff_next"></td><td class="diff_header" id="to0_3">3</td><td nowrap="nowrap"><span class="diff_add">Choosing&nbsp;the&nbsp;Ideal&nbsp;AI&nbsp;Model&nbsp;for&nbsp;Your&nbsp;Project:&nbsp;A&nbsp;Comprehensive&nbsp;Guide</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header" id="from0_4">4</td><td nowrap="nowrap"><span class="diff_sub">The&nbsp;smartest&nbsp;model&nbsp;is&nbsp;rarely&nbsp;the&nbsp;right&nbsp;one.&nbsp;The&nbsp;best&nbsp;engineers&nbsp;don’t&nbsp;just&nbsp;chase&nbsp;</span></td><td class="diff_next"></td><td class="diff_header" id="to0_4">4</td><td nowrap="nowrap"><span class="diff_add">The&nbsp;most&nbsp;intelligent&nbsp;model&nbsp;isn't&nbsp;always&nbsp;the&nbsp;best&nbsp;fit;&nbsp;seasoned&nbsp;engineers&nbsp;priorit</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">benchmarks;&nbsp;they&nbsp;chase&nbsp;fit.&nbsp;Let’s&nbsp;cut&nbsp;through&nbsp;the&nbsp;noise&nbsp;and&nbsp;figure&nbsp;out&nbsp;exactly&nbsp;w</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">ize&nbsp;finding&nbsp;the&nbsp;right&nbsp;tool&nbsp;for&nbsp;the&nbsp;specific&nbsp;problem&nbsp;at&nbsp;hand,&nbsp;rather&nbsp;than&nbsp;solely&nbsp;</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">hich&nbsp;tool&nbsp;belongs&nbsp;in&nbsp;your&nbsp;kit&nbsp;for&nbsp;the&nbsp;problem&nbsp;you&nbsp;are&nbsp;solving&nbsp;right&nbsp;now.</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">chasing&nbsp;benchmark&nbsp;performance.</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header" id="from0_5">5</td><td nowrap="nowrap"><span class="diff_sub">Before&nbsp;you&nbsp;rush&nbsp;to&nbsp;use&nbsp;a&nbsp;Transformer&nbsp;for&nbsp;everything,&nbsp;stop.&nbsp;If&nbsp;your&nbsp;data&nbsp;fits&nbsp;int</span></td><td class="diff_next"></td><td class="diff_header" id="to0_5">5</td><td nowrap="nowrap"><span class="diff_add">Before&nbsp;jumping&nbsp;into&nbsp;using&nbsp;a&nbsp;transformer&nbsp;for&nbsp;every&nbsp;task,&nbsp;take&nbsp;a&nbsp;step&nbsp;back;&nbsp;if&nbsp;you</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">o&nbsp;an&nbsp;Excel&nbsp;spreadsheet,&nbsp;rows&nbsp;and&nbsp;columns&nbsp;of&nbsp;numbers&nbsp;or&nbsp;categories,&nbsp;Generative&nbsp;AI</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">r&nbsp;data&nbsp;can&nbsp;be&nbsp;neatly&nbsp;organized&nbsp;into&nbsp;an&nbsp;Excel&nbsp;spreadsheet,&nbsp;a&nbsp;simpler&nbsp;approach&nbsp;mig</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">&nbsp;is&nbsp;often&nbsp;overkill.</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">ht&nbsp;be&nbsp;more&nbsp;effective.</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header" id="from0_6">6</td><td nowrap="nowrap"><span class="diff_sub">When&nbsp;to&nbsp;choose&nbsp;Traditional&nbsp;ML&nbsp;(XGBoost,&nbsp;LightGBM,&nbsp;Scikit-learn):</span></td><td class="diff_next"></td><td class="diff_header" id="to0_6">6</td><td nowrap="nowrap"><span class="diff_add">Traditional&nbsp;ML&nbsp;Models&nbsp;(XGBoost,&nbsp;LightGBM,&nbsp;Scikit-learn):&nbsp;When&nbsp;to&nbsp;Use&nbsp;Them</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header" id="from0_7">7</td><td nowrap="nowrap"><span class="diff_sub">Structured&nbsp;Data:&nbsp;You&nbsp;are&nbsp;predicting&nbsp;customer&nbsp;churn,&nbsp;housing&nbsp;prices,&nbsp;or&nbsp;credit&nbsp;ri</span></td><td class="diff_next"></td><td class="diff_header" id="to0_7">7</td><td nowrap="nowrap"><span class="diff_add">Tabular&nbsp;Data:&nbsp;Predicting&nbsp;outcomes&nbsp;like&nbsp;customer&nbsp;churn,&nbsp;housing&nbsp;prices,&nbsp;or&nbsp;credit</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">sk&nbsp;based&nbsp;on&nbsp;tabular&nbsp;data.</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">&nbsp;risk&nbsp;based&nbsp;on&nbsp;structured&nbsp;data&nbsp;is&nbsp;a&nbsp;common&nbsp;use&nbsp;case.</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header" id="from0_8">8</td><td nowrap="nowrap"><span class="diff_sub">Explainability:&nbsp;You&nbsp;need&nbsp;to&nbsp;tell&nbsp;a&nbsp;stakeholder&nbsp;exactly&nbsp;why&nbsp;a&nbsp;decision&nbsp;was&nbsp;made&nbsp;(</span></td><td class="diff_next"></td><td class="diff_header" id="to0_8">8</td><td nowrap="nowrap"><span class="diff_add">Interpretability:&nbsp;Providing&nbsp;clear&nbsp;explanations&nbsp;for&nbsp;the&nbsp;decisions&nbsp;made&nbsp;by&nbsp;your&nbsp;mo</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">Feature&nbsp;Importance).</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">del,&nbsp;such&nbsp;as&nbsp;feature&nbsp;importance,&nbsp;is&nbsp;crucial&nbsp;in&nbsp;certain&nbsp;applications.</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header" id="from0_9">9</td><td nowrap="nowrap"><span class="diff_sub">Speed&nbsp;&amp;&nbsp;Cost:&nbsp;You&nbsp;need&nbsp;to&nbsp;process&nbsp;millions&nbsp;of&nbsp;rows&nbsp;per&nbsp;second&nbsp;with&nbsp;minimal&nbsp;compu</span></td><td class="diff_next"></td><td class="diff_header" id="to0_9">9</td><td nowrap="nowrap"><span class="diff_add">Efficiency&nbsp;&amp;&nbsp;Cost-Effectiveness:&nbsp;Processing&nbsp;large&nbsp;datasets&nbsp;quickly&nbsp;while&nbsp;minimiz</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">te&nbsp;cost.</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">ing&nbsp;computational&nbsp;costs&nbsp;is&nbsp;essential&nbsp;for&nbsp;many&nbsp;projects.</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header" id="from0_10">10</td><td nowrap="nowrap"><span class="diff_sub">I&nbsp;once&nbsp;saw&nbsp;a&nbsp;team&nbsp;try&nbsp;to&nbsp;use&nbsp;GPT-4&nbsp;to&nbsp;classify&nbsp;simple&nbsp;sentiment&nbsp;on&nbsp;a&nbsp;dataset&nbsp;of&nbsp;</span></td><td class="diff_next"></td><td class="diff_header" id="to0_10">10</td><td nowrap="nowrap"><span class="diff_add">I&nbsp;recall&nbsp;a&nbsp;team&nbsp;that&nbsp;attempted&nbsp;to&nbsp;utilize&nbsp;GPT-4&nbsp;for&nbsp;sentiment&nbsp;analysis&nbsp;on&nbsp;a&nbsp;vast</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">10&nbsp;million&nbsp;tweets.&nbsp;It&nbsp;would&nbsp;have&nbsp;cost&nbsp;them&nbsp;thousands&nbsp;of&nbsp;dollars.&nbsp;A&nbsp;simple&nbsp;Logist</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">&nbsp;dataset&nbsp;of&nbsp;tweets,&nbsp;which&nbsp;would&nbsp;have&nbsp;incurred&nbsp;significant&nbsp;costs;&nbsp;a&nbsp;simple&nbsp;logist</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">ic&nbsp;Regression&nbsp;model&nbsp;did&nbsp;it&nbsp;for&nbsp;free&nbsp;in&nbsp;5&nbsp;minutes&nbsp;with&nbsp;95%&nbsp;accuracy.</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">ic&nbsp;regression&nbsp;model&nbsp;achieved&nbsp;95%&nbsp;accuracy&nbsp;in&nbsp;mere&nbsp;minutes,&nbsp;at&nbsp;no&nbsp;cost.</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header" id="from0_11">11</td><td nowrap="nowrap"><span class="diff_sub">Models&nbsp;like&nbsp;GPT-4o,&nbsp;Claude&nbsp;3.5&nbsp;Sonnet,&nbsp;or&nbsp;Gemini&nbsp;Pro&nbsp;are&nbsp;incredibly&nbsp;powerful&nbsp;gen</span></td><td class="diff_next"></td><td class="diff_header" id="to0_11">11</td><td nowrap="nowrap"><span class="diff_add">Powerful,&nbsp;general-purpose&nbsp;models&nbsp;like&nbsp;GPT-4,&nbsp;Claude,&nbsp;or&nbsp;Gemini&nbsp;offer&nbsp;extensive&nbsp;k</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">eralists.&nbsp;They&nbsp;have&nbsp;world&nbsp;knowledge.&nbsp;However,&nbsp;they&nbsp;are&nbsp;leased,&nbsp;not&nbsp;owned.&nbsp;You&nbsp;se</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">nowledge&nbsp;but&nbsp;come&nbsp;with&nbsp;the&nbsp;caveat&nbsp;of&nbsp;being&nbsp;leased,&nbsp;requiring&nbsp;data&nbsp;to&nbsp;be&nbsp;sent&nbsp;out</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">nd&nbsp;data&nbsp;out;&nbsp;you&nbsp;get&nbsp;answers&nbsp;back.</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">&nbsp;and&nbsp;answers&nbsp;to&nbsp;be&nbsp;received,&nbsp;rather&nbsp;than&nbsp;being&nbsp;owned&nbsp;outright.</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header" id="from0_12">12</td><td nowrap="nowrap"><span class="diff_sub">Complex&nbsp;Reasoning:&nbsp;You&nbsp;need&nbsp;the&nbsp;model&nbsp;to&nbsp;understand&nbsp;nuance,&nbsp;sarcasm,&nbsp;or&nbsp;complex&nbsp;</span></td><td class="diff_next"></td><td class="diff_header" id="to0_12">12</td><td nowrap="nowrap"><span class="diff_add">Complex&nbsp;Problem-Solving:&nbsp;When&nbsp;your&nbsp;project&nbsp;demands&nbsp;nuanced&nbsp;understanding,&nbsp;sarcas</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">logic&nbsp;(like&nbsp;legal&nbsp;summarisation).</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">m&nbsp;detection,&nbsp;or&nbsp;intricate&nbsp;logical&nbsp;reasoning,&nbsp;such&nbsp;as&nbsp;legal&nbsp;document&nbsp;summarizatio</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header"></td><td nowrap="nowrap">&nbsp;</td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">n,&nbsp;these&nbsp;models&nbsp;shine.</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header" id="from0_13">13</td><td nowrap="nowrap"><span class="diff_sub">The&nbsp;MVP&nbsp;Phase:&nbsp;You&nbsp;want&nbsp;to&nbsp;build&nbsp;a&nbsp;prototype&nbsp;in&nbsp;a&nbsp;weekend&nbsp;to&nbsp;prove&nbsp;an&nbsp;idea&nbsp;works</span></td><td class="diff_next"></td><td class="diff_header" id="to0_13">13</td><td nowrap="nowrap"><span class="diff_add">Rapid&nbsp;Prototyping:&nbsp;Building&nbsp;a&nbsp;functional&nbsp;prototype&nbsp;over&nbsp;a&nbsp;weekend&nbsp;to&nbsp;validate&nbsp;an</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">.</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">&nbsp;idea&nbsp;is&nbsp;often&nbsp;the&nbsp;first&nbsp;step&nbsp;in&nbsp;the&nbsp;development&nbsp;process.</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header" id="from0_14">14</td><td nowrap="nowrap"><span class="diff_sub">Generalisation:&nbsp;The&nbsp;input&nbsp;data&nbsp;is&nbsp;highly&nbsp;variable&nbsp;and&nbsp;unstructured&nbsp;(emails,&nbsp;essa</span></td><td class="diff_next"></td><td class="diff_header" id="to0_14">14</td><td nowrap="nowrap"><span class="diff_add">Generalizability:&nbsp;Handling&nbsp;diverse,&nbsp;unstructured&nbsp;data&nbsp;sources&nbsp;like&nbsp;emails,&nbsp;essay</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">ys,&nbsp;messy&nbsp;PDFs).</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">s,&nbsp;or&nbsp;disorganized&nbsp;PDFs&nbsp;requires&nbsp;models&nbsp;capable&nbsp;of&nbsp;adapting&nbsp;to&nbsp;variable&nbsp;input.</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header" id="from0_15">15</td><td nowrap="nowrap"><span class="diff_sub">With&nbsp;the&nbsp;rise&nbsp;of&nbsp;Llama&nbsp;3,&nbsp;Mistral,&nbsp;and&nbsp;Gemma,&nbsp;the&nbsp;gap&nbsp;between&nbsp;closed&nbsp;and&nbsp;open&nbsp;mo</span></td><td class="diff_next"></td><td class="diff_header" id="to0_15">15</td><td nowrap="nowrap"><span class="diff_add">The&nbsp;emergence&nbsp;of&nbsp;models&nbsp;like&nbsp;Llama,&nbsp;Mistral,&nbsp;and&nbsp;Gemma&nbsp;is&nbsp;bridging&nbsp;the&nbsp;gap&nbsp;betwe</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">dels&nbsp;is&nbsp;closing&nbsp;fast.&nbsp;Running&nbsp;a&nbsp;model&nbsp;locally&nbsp;(or&nbsp;on&nbsp;your&nbsp;own&nbsp;private&nbsp;cloud)&nbsp;is&nbsp;</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">en&nbsp;closed&nbsp;and&nbsp;open&nbsp;models,&nbsp;with&nbsp;locally&nbsp;run&nbsp;models&nbsp;offering&nbsp;unparalleled&nbsp;control</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">the&nbsp;ultimate&nbsp;power&nbsp;move&nbsp;for&nbsp;production&nbsp;engineering.</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">&nbsp;for&nbsp;production&nbsp;environments.</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header" id="from0_16">16</td><td nowrap="nowrap"><span class="diff_sub">When&nbsp;to&nbsp;choose&nbsp;Local&nbsp;LLMs&nbsp;(Llama&nbsp;3,&nbsp;Mistral,&nbsp;Phi-3):</span></td><td class="diff_next"></td><td class="diff_header" id="to0_16">16</td><td nowrap="nowrap"><span class="diff_add">Local&nbsp;LLMs&nbsp;(Llama,&nbsp;Mistral,&nbsp;Phi-3):&nbsp;When&nbsp;to&nbsp;Opt&nbsp;for&nbsp;Them</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header" id="from0_17">17</td><td nowrap="nowrap"><span class="diff_sub">Data&nbsp;Privacy:&nbsp;You&nbsp;are&nbsp;dealing&nbsp;with&nbsp;HIPAA&nbsp;(medical),&nbsp;GDPR,&nbsp;or&nbsp;sensitive&nbsp;proprieta</span></td><td class="diff_next"></td><td class="diff_header" id="to0_17">17</td><td nowrap="nowrap"><span class="diff_add">Data&nbsp;Confidentiality:&nbsp;Projects&nbsp;involving&nbsp;sensitive&nbsp;data,&nbsp;such&nbsp;as&nbsp;medical&nbsp;informa</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">ry&nbsp;code.&nbsp;The&nbsp;data&nbsp;cannot&nbsp;leave&nbsp;your&nbsp;server.</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">tion&nbsp;under&nbsp;HIPAA&nbsp;or&nbsp;proprietary&nbsp;code,&nbsp;necessitate&nbsp;models&nbsp;that&nbsp;can&nbsp;operate&nbsp;withou</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header"></td><td nowrap="nowrap">&nbsp;</td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">t&nbsp;data&nbsp;leaving&nbsp;the&nbsp;server.</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header" id="from0_18">18</td><td nowrap="nowrap"><span class="diff_sub">Cost&nbsp;Control:&nbsp;You&nbsp;have&nbsp;high&nbsp;volume.&nbsp;Paying&nbsp;per&nbsp;token&nbsp;to&nbsp;an&nbsp;API&nbsp;adds&nbsp;up;&nbsp;running&nbsp;</span></td><td class="diff_next"></td><td class="diff_header" id="to0_18">18</td><td nowrap="nowrap"><span class="diff_add">Budget&nbsp;Management:&nbsp;For&nbsp;high-volume&nbsp;applications,&nbsp;the&nbsp;cost&nbsp;of&nbsp;API&nbsp;calls&nbsp;can&nbsp;escal</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">a&nbsp;GPU&nbsp;instance&nbsp;is&nbsp;a&nbsp;fixed&nbsp;cost.</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">ate&nbsp;quickly;&nbsp;in&nbsp;contrast,&nbsp;running&nbsp;a&nbsp;local&nbsp;GPU&nbsp;instance&nbsp;provides&nbsp;a&nbsp;fixed,&nbsp;predict</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header"></td><td nowrap="nowrap">&nbsp;</td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">able&nbsp;expense.</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header" id="from0_19">19</td><td nowrap="nowrap"><span class="diff_sub">Latency:&nbsp;You&nbsp;need&nbsp;instant&nbsp;responses&nbsp;and&nbsp;cannot&nbsp;depend&nbsp;on&nbsp;an&nbsp;API’s&nbsp;internet&nbsp;conne</span></td><td class="diff_next"></td><td class="diff_header" id="to0_19">19</td><td nowrap="nowrap"><span class="diff_add">Real-Time&nbsp;Responses:&nbsp;Applications&nbsp;requiring&nbsp;instantaneous&nbsp;feedback&nbsp;cannot&nbsp;rely&nbsp;o</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">ction.</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">n&nbsp;API&nbsp;connectivity&nbsp;and&nbsp;internet&nbsp;speeds.</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header" id="from0_20">20</td><td nowrap="nowrap"><span class="diff_sub">We&nbsp;are&nbsp;moving&nbsp;from&nbsp;Chatbots&nbsp;(who&nbsp;talk)&nbsp;to&nbsp;Agents&nbsp;(who&nbsp;do).&nbsp;An&nbsp;agent&nbsp;is&nbsp;an&nbsp;LLM&nbsp;wr</span></td><td class="diff_next"></td><td class="diff_header" id="to0_20">20</td><td nowrap="nowrap"><span class="diff_add">The&nbsp;evolution&nbsp;from&nbsp;chatbots&nbsp;to&nbsp;agents&nbsp;marks&nbsp;a&nbsp;significant&nbsp;shift;&nbsp;agents&nbsp;are&nbsp;not&nbsp;</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">apped&nbsp;in&nbsp;a&nbsp;loop&nbsp;that&nbsp;allows&nbsp;it&nbsp;to&nbsp;use&nbsp;tools,&nbsp;search&nbsp;the&nbsp;web,&nbsp;query&nbsp;a&nbsp;database,&nbsp;o</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">just&nbsp;language&nbsp;models&nbsp;but&nbsp;are&nbsp;capable&nbsp;of&nbsp;performing&nbsp;tasks,&nbsp;searching&nbsp;the&nbsp;web,&nbsp;que</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">r&nbsp;run&nbsp;Python&nbsp;code.</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">rying&nbsp;databases,&nbsp;or&nbsp;executing&nbsp;code.</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header" id="from0_21">21</td><td nowrap="nowrap"><span class="diff_sub">Multi-step&nbsp;Workflows:&nbsp;The&nbsp;task&nbsp;requires&nbsp;planning.&nbsp;Example:&nbsp;“Research&nbsp;this&nbsp;compan</span></td><td class="diff_next"></td><td class="diff_header" id="to0_21">21</td><td nowrap="nowrap"><span class="diff_add">Multi-Step&nbsp;Processes:&nbsp;Tasks&nbsp;that&nbsp;involve&nbsp;planning,&nbsp;such&nbsp;as&nbsp;researching&nbsp;a&nbsp;company</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">y,&nbsp;then&nbsp;find&nbsp;their&nbsp;stock&nbsp;price,&nbsp;then&nbsp;write&nbsp;a&nbsp;summary.”</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">,&nbsp;finding&nbsp;its&nbsp;stock&nbsp;price,&nbsp;and&nbsp;summarizing&nbsp;the&nbsp;information,&nbsp;are&nbsp;ideal&nbsp;for&nbsp;these&nbsp;</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header"></td><td nowrap="nowrap">&nbsp;</td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">advanced&nbsp;models.</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header" id="from0_22">22</td><td nowrap="nowrap"><span class="diff_sub">External&nbsp;Actions:&nbsp;You&nbsp;need&nbsp;the&nbsp;AI&nbsp;to&nbsp;book&nbsp;a&nbsp;meeting,&nbsp;send&nbsp;an&nbsp;email,&nbsp;or&nbsp;update&nbsp;a&nbsp;</span></td><td class="diff_next"></td><td class="diff_header" id="to0_22">22</td><td nowrap="nowrap"><span class="diff_add">External&nbsp;Interactions:&nbsp;When&nbsp;the&nbsp;AI&nbsp;needs&nbsp;to&nbsp;perform&nbsp;actions&nbsp;like&nbsp;scheduling&nbsp;meet</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">Jira&nbsp;ticket.</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">ings,&nbsp;sending&nbsp;emails,&nbsp;or&nbsp;updating&nbsp;tickets,&nbsp;the&nbsp;capabilities&nbsp;of&nbsp;agents&nbsp;come&nbsp;into&nbsp;</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header"></td><td nowrap="nowrap">&nbsp;</td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">play.</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header" id="from0_23">23</td><td nowrap="nowrap"><span class="diff_sub">Dynamic&nbsp;Context:&nbsp;The&nbsp;answer&nbsp;isn’t&nbsp;in&nbsp;the&nbsp;model’s&nbsp;training&nbsp;data,&nbsp;and&nbsp;it&nbsp;changes&nbsp;e</span></td><td class="diff_next"></td><td class="diff_header" id="to0_23">23</td><td nowrap="nowrap"><span class="diff_add">Dynamic&nbsp;Information:&nbsp;Situations&nbsp;where&nbsp;the&nbsp;answer&nbsp;is&nbsp;not&nbsp;static&nbsp;and&nbsp;changes&nbsp;frequ</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">very&nbsp;minute&nbsp;(like&nbsp;checking&nbsp;weather&nbsp;or&nbsp;stock&nbsp;prices).</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">ently,&nbsp;such&nbsp;as&nbsp;checking&nbsp;current&nbsp;weather&nbsp;or&nbsp;stock&nbsp;prices,&nbsp;require&nbsp;models&nbsp;that&nbsp;can</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header"></td><td nowrap="nowrap">&nbsp;</td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">&nbsp;adapt&nbsp;and&nbsp;fetch&nbsp;new&nbsp;data.</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header" id="from0_24">24</td><td nowrap="nowrap"><span class="diff_sub">As&nbsp;you&nbsp;continue&nbsp;your&nbsp;journey&nbsp;in&nbsp;Data&nbsp;Science,&nbsp;remember&nbsp;this:&nbsp;Your&nbsp;value&nbsp;isn’t&nbsp;de</span></td><td class="diff_next"></td><td class="diff_header" id="to0_24">24</td><td nowrap="nowrap"><span class="diff_add">As&nbsp;you&nbsp;progress&nbsp;in&nbsp;your&nbsp;data&nbsp;science&nbsp;journey,&nbsp;remember&nbsp;that&nbsp;your&nbsp;value&nbsp;is&nbsp;not&nbsp;me</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">fined&nbsp;by&nbsp;the&nbsp;complexity&nbsp;of&nbsp;the&nbsp;model&nbsp;you&nbsp;use,&nbsp;but&nbsp;by&nbsp;the&nbsp;problem&nbsp;you&nbsp;solve.&nbsp;Some</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">asured&nbsp;by&nbsp;the&nbsp;complexity&nbsp;of&nbsp;the&nbsp;models&nbsp;you&nbsp;use,&nbsp;but&nbsp;by&nbsp;the&nbsp;problems&nbsp;you&nbsp;solve&nbsp;ef</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">times,&nbsp;the&nbsp;most&nbsp;advanced&nbsp;AI&nbsp;solution&nbsp;is&nbsp;a&nbsp;simple&nbsp;SQL&nbsp;query.&nbsp;Sometimes,&nbsp;it’s&nbsp;a&nbsp;ma</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">fectively;&nbsp;sometimes,&nbsp;the&nbsp;simplest&nbsp;solutions,&nbsp;like&nbsp;a&nbsp;well-crafted&nbsp;SQL&nbsp;query,&nbsp;are</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">ssive&nbsp;Agentic&nbsp;workflow.</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">&nbsp;the&nbsp;most&nbsp;powerful.</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header" id="from0_25">25</td><td nowrap="nowrap"><span class="diff_sub">Have&nbsp;the&nbsp;humility&nbsp;to&nbsp;start&nbsp;simple,&nbsp;and&nbsp;the&nbsp;courage&nbsp;to&nbsp;scale&nbsp;up&nbsp;only&nbsp;when&nbsp;the&nbsp;pro</span></td><td class="diff_next"></td><td class="diff_header" id="to0_25">25</td><td nowrap="nowrap"><span class="diff_add">Embracing&nbsp;humility&nbsp;to&nbsp;start&nbsp;with&nbsp;simple&nbsp;solutions&nbsp;and&nbsp;having&nbsp;the&nbsp;courage&nbsp;to&nbsp;scal</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">blem&nbsp;demands&nbsp;it.&nbsp;That&nbsp;is&nbsp;the&nbsp;difference&nbsp;between&nbsp;a&nbsp;hype-chaser&nbsp;and&nbsp;a&nbsp;true&nbsp;enginee</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">e&nbsp;up&nbsp;as&nbsp;needed&nbsp;is&nbsp;what&nbsp;distinguishes&nbsp;a&nbsp;true&nbsp;engineer&nbsp;from&nbsp;one&nbsp;who&nbsp;merely&nbsp;chases&nbsp;</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">r.</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">trends.</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header" id="from0_26">26</td><td nowrap="nowrap"><span class="diff_sub">I&nbsp;hope&nbsp;you&nbsp;liked&nbsp;this&nbsp;article&nbsp;on&nbsp;how&nbsp;to&nbsp;pick&nbsp;the&nbsp;right&nbsp;AI&nbsp;model&nbsp;for&nbsp;your&nbsp;project</span></td><td class="diff_next"></td><td class="diff_header" id="to0_26">26</td><td nowrap="nowrap"><span class="diff_add">I&nbsp;hope&nbsp;this&nbsp;article&nbsp;has&nbsp;provided&nbsp;you&nbsp;with&nbsp;valuable&nbsp;insights&nbsp;into&nbsp;selecting&nbsp;the&nbsp;r</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_sub">.&nbsp;Follow&nbsp;me&nbsp;on&nbsp;Instagram&nbsp;for&nbsp;many&nbsp;more&nbsp;resources.</span></td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">ight&nbsp;AI&nbsp;model&nbsp;for&nbsp;your&nbsp;project;&nbsp;for&nbsp;more&nbsp;resources&nbsp;and&nbsp;updates,&nbsp;follow&nbsp;me&nbsp;on&nbsp;Ins</span></td></tr>
+            <tr><td class="diff_next"></td><td class="diff_header"></td><td nowrap="nowrap">&nbsp;</td><td class="diff_next"></td><td class="diff_header">></td><td nowrap="nowrap"><span class="diff_add">tagram.</span></td></tr>
+        </tbody>
+    </table>
+    <table class="diff" summary="Legends">
+        <tr> <th colspan="2"> Legends </th> </tr>
+        <tr> <td> <table border="" summary="Colors">
+                      <tr><th> Colors </th> </tr>
+                      <tr><td class="diff_add">&nbsp;Added&nbsp;</td></tr>
+                      <tr><td class="diff_chg">Changed</td> </tr>
+                      <tr><td class="diff_sub">Deleted</td> </tr>
+                  </table></td>
+             <td> <table border="" summary="Links">
+                      <tr><th colspan="2"> Links </th> </tr>
+                      <tr><td>(f)irst change</td> </tr>
+                      <tr><td>(n)ext change</td> </tr>
+                      <tr><td>(t)op</td> </tr>
+                  </table></td> </tr>
+    </table>
+</body>
+
+</html>
 ```
 
 ### `generate_docs.py`
@@ -185,6 +411,41 @@ def compile_docs():
                 out.write(f"├── {d}/\n")
                 out.write(generate_tree(d, "│   "))
         out.write("```\n\n")
+        
+        out.write("### 📁 Module Descriptions\n\n")
+        out.write("#### 🌐 Frontend (`frontend/`)\n")
+        out.write("- **`index.html`**: The main user dashboard where they paste their article content.\n")
+        out.write("- **`styles.css`**: All the styling for the application, including the \"shimmer/skeleton\" loading animations and the layout of the split-pane report view.\n")
+        out.write("- **`app.js`**: The vanilla JavaScript logic that handles sending data to the backend, listening to the real-time Server-Sent Events (SSE) stream, and dynamically updating the UI progress bar.\n\n")
+        
+        out.write("#### 🗄️ Database (`database/`)\n")
+        out.write("- **`cre.db`**: The single, portable SQLite3 database file that holds absolutely everything: user accounts, article histories (original vs rewritten content), and the local fingerprint plagiarism index.\n\n")
+
+        out.write("#### ⚙️ Backend (`backend/`)\n")
+        out.write("**1. Core Config & Entry Points**\n")
+        out.write("- **`main.py`**: The entry point to the FastAPI application. It wires up CORS, the global exception handler, rate limiting, and attaches the routing files.\n")
+        out.write("- **`.env`**: Stores all of your secret API keys (Gemini, OpenRouter, DeepSeek, Groq).\n")
+        out.write("- **`config.py`**: Loads the `.env` variables into Python memory safely using Pydantic Settings.\n\n")
+
+        out.write("**2. Models & Database (`backend/models/`)**\n")
+        out.write("- **`database.py`**: Handles connecting to the `database/cre.db` SQLite file securely.\n")
+        out.write("- **`article_model.py` / `report_model.py`**: Pydantic schemas (data shapes) that define exactly what data the frontend must send to the backend, and what data the backend will return.\n")
+        out.write("- **`index_db.py`**: Houses the table structures for the new `indexed_documents` and `fingerprints` tables.\n\n")
+
+        out.write("**3. API Routes (`backend/api/`)**\n")
+        out.write("- **`controllers.py`**: The main traffic cop. It receives the HTTP request from the frontend and orchestrates the entire pipeline: Scraping -> Embedding -> Analysis -> Rewriting. It also streams the SSE updates back to the browser.\n")
+        out.write("- **`auth_middleware.py`**: Checks if the user has an active API key or free trial limit remaining before letting them hit the expensive LLM endpoints.\n")
+        out.write("- **`limits.py` & `usage_tracker.py`**: Enforces rate limiting (e.g., max 5 requests per day for free users) and tracks character counts in the SQLite database.\n\n")
+
+        out.write("**4. The Pipeline Services (`backend/services/`)**\n")
+        out.write("- **`query_generation.py`**: Uses DeepSeek/Groq to read the user's input article and figure out the 3 most important keyword search queries to test it against the internet.\n")
+        out.write("- **`search_service.py`**: Takes those queries and searches them on Google Custom Search API or DuckDuckGo.\n")
+        out.write("- **`scraper_service.py`**: Uses `Trafilatura` to visit the URLs found by the search service, bypass anti-bot protections, and extract the raw, readable text from those live competitor websites.\n")
+        out.write("- **`embedding_service.py`**: Converts both the user's article and the scraped competitor articles into dense mathematical vectors (using a HuggingFace `sentence-transformers` model).\n")
+        out.write("- **`similarity.py`**: Performs O(N x M) Cosine Similarity Math. It compares the vectors from the step above to generate a mathematical percentage.\n")
+        out.write("- **`analysis_service.py`**: Hands the text over to your Heavy Reasoner LLMs (DeepSeek -> Groq -> OpenRouter) to grade it.\n")
+        out.write("- **`rewrite_service.py`**: The final step. Hands the text to your Fast Writer LLMs (Gemini -> Groq -> OpenRouter) to completely refactor the sentence structures.\n")
+        out.write("- **`fingerprint_engine.py`**: A fast algorithmic chunker that chops text into 5-word shingles and saves them in the database for instant offline plagiarism matching.\n\n")
         
         out.write("---\n\n## 5. Complete Source Code\n\n")
         
@@ -295,6 +556,171 @@ cd backend
 # Use Gunicorn as a process manager with Uvicorn workers for production stability
 # Uses the PORT environment variable provided automatically by Render
 gunicorn main:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT
+
+```
+
+### `test_fingerprint.py`
+
+```python
+#!/usr/bin/env python3
+"""
+Fingerprint Engine Verification Test
+
+Tests the complete pipeline:
+  1. Text normalization
+  2. Shingling
+  3. MurmurHash3 hashing
+  4. Document indexing into DB
+  5. O(1) lookup and matching
+"""
+import sys
+import os
+import time
+
+# Add backend to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'backend'))
+
+from models.index_db import init_index_tables, get_index_stats
+from services.fingerprint_engine import (
+    normalize_text,
+    generate_shingles,
+    hash_shingles,
+    generate_fingerprints,
+    index_document,
+    lookup_fingerprints,
+)
+
+# ==============================
+# Setup
+# ==============================
+print("=" * 60)
+print("FINGERPRINT ENGINE VERIFICATION TEST")
+print("=" * 60)
+
+# Initialize tables
+init_index_tables()
+stats = get_index_stats()
+print(f"\n[Setup] Index stats before test: {stats}")
+
+# ==============================
+# Test 1: Text Normalization
+# ==============================
+print("\n--- Test 1: Text Normalization ---")
+raw = "  Machine Learning is used in Artificial Intelligence systems!!! "
+normalized = normalize_text(raw)
+print(f"  Input:      '{raw}'")
+print(f"  Normalized: '{normalized}'")
+assert normalized == "machine learning is used in artificial intelligence systems"
+print("  ✅ PASSED")
+
+# ==============================
+# Test 2: Shingle Generation
+# ==============================
+print("\n--- Test 2: Shingle Generation ---")
+shingles = generate_shingles(normalized, n=5)
+print(f"  Input words: {len(normalized.split())}")
+print(f"  Shingles generated: {len(shingles)}")
+for i, s in enumerate(shingles):
+    print(f"    [{i}] {s}")
+expected_count = len(normalized.split()) - 5 + 1
+assert len(shingles) == expected_count, f"Expected {expected_count}, got {len(shingles)}"
+print("  ✅ PASSED")
+
+# ==============================
+# Test 3: MurmurHash3 Hashing
+# ==============================
+print("\n--- Test 3: MurmurHash3 Hashing ---")
+hashes = hash_shingles(shingles)
+print(f"  Hashes generated: {len(hashes)}")
+for i, h in enumerate(hashes):
+    print(f"    [{i}] {shingles[i]} → {h}")
+assert all(isinstance(h, int) for h in hashes)
+assert len(set(hashes)) == len(hashes), "Hash collision detected in small set!"
+print("  ✅ PASSED")
+
+# ==============================
+# Test 4: Full Fingerprint Generation
+# ==============================
+print("\n--- Test 4: Full Fingerprint Generation ---")
+article = """
+Machine learning algorithms are increasingly being used in modern artificial intelligence 
+systems to automate complex decision-making processes. These algorithms learn from data 
+patterns and make predictions without explicit programming. Deep learning, a subset of 
+machine learning, uses neural networks with multiple layers to extract higher-level features 
+from raw input data. This approach has revolutionized fields such as computer vision, 
+natural language processing, and speech recognition.
+"""
+fps = generate_fingerprints(article)
+print(f"  Article word count: {len(article.split())}")
+print(f"  Fingerprints generated: {len(fps)}")
+assert len(fps) > 0
+print("  ✅ PASSED")
+
+# ==============================
+# Test 5: Document Indexing
+# ==============================
+print("\n--- Test 5: Document Indexing ---")
+result = index_document("https://example.com/ml-article", article)
+print(f"  Result: {result}")
+assert result["status"] == "indexed"
+assert result["fingerprint_count"] > 0
+
+# Index a second document
+article2 = """
+Cloud computing provides on-demand availability of computer system resources, especially 
+data storage and computing power, without direct active management by the user. Large 
+cloud providers offer their services from data centers located around the world. Cloud 
+computing enables organizations to consume compute resources as a utility rather than 
+building and maintaining computing infrastructure in-house.
+"""
+result2 = index_document("https://example.com/cloud-article", article2)
+print(f"  Doc 2 Result: {result2}")
+assert result2["status"] == "indexed"
+
+# Try indexing same URL again (should skip)
+result3 = index_document("https://example.com/ml-article", article)
+print(f"  Duplicate Result: {result3}")
+assert result3["status"] == "skipped"
+print("  ✅ PASSED")
+
+# ==============================
+# Test 6: O(1) Fingerprint Lookup
+# ==============================
+print("\n--- Test 6: O(1) Fingerprint Lookup ---")
+
+# Slightly modified version of article 1 — should still match
+query_article = """
+Machine learning algorithms are increasingly used in modern AI systems to automate 
+complex decision-making. These algorithms learn from data patterns and make predictions 
+without explicit programming instructions. Deep learning uses neural networks with 
+multiple layers to extract higher-level features from raw data input.
+"""
+
+start_time = time.time()
+matches = lookup_fingerprints(query_article)
+lookup_ms = (time.time() - start_time) * 1000
+
+print(f"  Lookup time: {lookup_ms:.2f} ms")
+print(f"  Matches found: {len(matches)}")
+for m in matches:
+    print(f"    URL: {m['url']}")
+    print(f"    Match count: {m['match_count']}/{m['total_fingerprints']}")
+    print(f"    Similarity: {m['similarity'] * 100:.1f}%")
+    print()
+
+assert len(matches) > 0, "No matches found — fingerprint lookup failed!"
+assert matches[0]["url"] == "https://example.com/ml-article", "Wrong document matched!"
+assert lookup_ms < 500, f"Lookup too slow: {lookup_ms:.2f}ms (target < 500ms)"
+print("  ✅ PASSED")
+
+# ==============================
+# Final Stats
+# ==============================
+stats = get_index_stats()
+print("\n" + "=" * 60)
+print(f"FINAL INDEX STATS: {stats['documents']} documents, {stats['fingerprints']} fingerprints")
+print("=" * 60)
+print("\n🎉 ALL TESTS PASSED — Fingerprint Engine is operational!")
 
 ```
 
@@ -1646,6 +2072,7 @@ trafilatura
 google-generativeai
 googlesearch-python
 gunicorn
+mmh3
 
 ```
 
@@ -1852,6 +2279,90 @@ def init_db():
 
 if __name__ == "__main__":
     init_db()
+
+```
+
+### `backend/models/index_db.py`
+
+```python
+"""
+Fingerprint Index DB Schema
+
+Creates the inverted index tables used by the Fingerprint Engine
+for O(1) plagiarism detection lookups.
+"""
+import sqlite3
+import os
+
+INDEX_DB_PATH = os.path.join(os.path.dirname(__file__), '../../database/cre.db')
+
+
+def init_index_tables():
+    """Create the fingerprint index tables if they don't exist."""
+    conn = sqlite3.connect(INDEX_DB_PATH)
+    cursor = conn.cursor()
+    
+    # Table 1: Indexed Documents — stores metadata of every crawled/indexed page
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS indexed_documents (
+            id TEXT PRIMARY KEY,
+            url TEXT UNIQUE NOT NULL,
+            content_snippet TEXT,
+            word_count INTEGER DEFAULT 0,
+            indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Table 2: Fingerprints — the core inverted index
+    # Maps each fingerprint hash → the document it belongs to
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS fingerprints (
+            fingerprint_hash INTEGER NOT NULL,
+            document_id TEXT NOT NULL,
+            FOREIGN KEY (document_id) REFERENCES indexed_documents(id)
+        )
+    """)
+    
+    # Critical: Index on fingerprint_hash for O(1) lookups
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_fingerprint_hash 
+        ON fingerprints(fingerprint_hash)
+    """)
+    
+    # Index on document_id for fast document-level queries
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_fingerprint_doc 
+        ON fingerprints(document_id)
+    """)
+    
+    conn.commit()
+    conn.close()
+    print("[IndexDB] Fingerprint index tables initialized.")
+
+
+def get_index_stats():
+    """Return current index statistics."""
+    conn = sqlite3.connect(INDEX_DB_PATH)
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("SELECT COUNT(*) FROM indexed_documents")
+        doc_count = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM fingerprints")
+        fp_count = cursor.fetchone()[0]
+    except sqlite3.OperationalError:
+        doc_count = 0
+        fp_count = 0
+    
+    conn.close()
+    return {"documents": doc_count, "fingerprints": fp_count}
+
+
+if __name__ == "__main__":
+    init_index_tables()
+    stats = get_index_stats()
+    print(f"[IndexDB] Stats: {stats['documents']} documents, {stats['fingerprints']} fingerprints")
 
 ```
 
@@ -2347,6 +2858,239 @@ async def generate_embeddings(texts: list[str]) -> np.ndarray:
             
     # Fallback executing the lightweight local model in the background thread
     return await asyncio.to_thread(_run_local)
+
+```
+
+### `backend/services/fingerprint_engine.py`
+
+```python
+"""
+Fingerprint Engine — The Core CRE Proprietary Index Technology
+
+Converts text → normalized shingles → MurmurHash3 integers.
+Provides O(1) database insertion and lookup for instant plagiarism detection.
+
+Industry standard: 5-word shingling + MurmurHash3 (same as Elasticsearch internals).
+"""
+import re
+import hashlib
+import sqlite3
+import os
+import mmh3
+
+INDEX_DB_PATH = os.path.join(os.path.dirname(__file__), '../../database/cre.db')
+
+# ==============================
+# 1. Text Normalization
+# ==============================
+
+def normalize_text(text: str) -> str:
+    """
+    Normalize text for consistent fingerprinting.
+    - Lowercase
+    - Strip all punctuation except hyphens (preserve compound words)
+    - Collapse whitespace
+    """
+    text = text.lower()
+    # Remove everything except letters, digits, hyphens, and spaces
+    text = re.sub(r'[^a-z0-9\s\-]', '', text)
+    # Collapse whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+# ==============================
+# 2. Shingling (N-Gram Generation)
+# ==============================
+
+def generate_shingles(text: str, n: int = 5) -> list[str]:
+    """
+    Generate overlapping N-word shingles from normalized text.
+    
+    Example (n=5):
+      "machine learning is used in artificial intelligence systems"
+      → ["machine learning is used in",
+         "learning is used in artificial",
+         "is used in artificial intelligence",
+         "used in artificial intelligence systems"]
+    """
+    words = text.split()
+    if len(words) < n:
+        # If text is too short for n-grams, return the whole thing as one shingle
+        return [text] if text else []
+    
+    shingles = []
+    for i in range(len(words) - n + 1):
+        shingle = " ".join(words[i:i + n])
+        shingles.append(shingle)
+    
+    return shingles
+
+
+# ==============================
+# 3. MurmurHash3 Fingerprinting
+# ==============================
+
+def hash_shingles(shingles: list[str]) -> list[int]:
+    """
+    Convert string shingles into 32-bit MurmurHash3 integers.
+    
+    MurmurHash3 is:
+    - Non-cryptographic (fast, not for security)
+    - Excellent distribution (minimal collisions)
+    - Industry standard for inverted indexes (Elasticsearch uses it)
+    """
+    return [mmh3.hash(shingle, signed=False) for shingle in shingles]
+
+
+# ==============================
+# 4. Master Fingerprint Generator
+# ==============================
+
+def generate_fingerprints(text: str) -> list[int]:
+    """
+    The core function: Text → Fingerprints.
+    
+    Pipeline:
+      Raw text → normalize → shingle (5-word) → MurmurHash3 → integer list
+    
+    Returns: list of 32-bit unsigned integers (fingerprint hashes)
+    """
+    normalized = normalize_text(text)
+    shingles = generate_shingles(normalized)
+    fingerprints = hash_shingles(shingles)
+    return fingerprints
+
+
+# ==============================
+# 5. Document Indexing (DB Insert)
+# ==============================
+
+def index_document(url: str, text: str) -> dict:
+    """
+    Index a single document into the fingerprint database.
+    
+    Steps:
+      1. Generate a unique document ID from the URL
+      2. Check if already indexed (skip if yes)
+      3. Generate fingerprints from the text
+      4. Bulk insert (hash, doc_id) pairs into the inverted index
+    
+    Returns: {"status": "indexed"|"skipped", "fingerprint_count": N}
+    """
+    # Generate deterministic document ID from URL
+    doc_id = hashlib.md5(url.encode()).hexdigest()
+    
+    conn = sqlite3.connect(INDEX_DB_PATH)
+    cursor = conn.cursor()
+    
+    try:
+        # Check if already indexed
+        cursor.execute("SELECT id FROM indexed_documents WHERE id = ?", (doc_id,))
+        if cursor.fetchone():
+            conn.close()
+            return {"status": "skipped", "fingerprint_count": 0, "doc_id": doc_id}
+        
+        # Generate fingerprints
+        fingerprints = generate_fingerprints(text)
+        
+        if not fingerprints:
+            conn.close()
+            return {"status": "skipped", "fingerprint_count": 0, "doc_id": doc_id}
+        
+        # Insert document metadata
+        word_count = len(text.split())
+        cursor.execute(
+            "INSERT INTO indexed_documents (id, url, content_snippet, word_count) VALUES (?, ?, ?, ?)",
+            (doc_id, url, text[:500], word_count)
+        )
+        
+        # Bulk insert fingerprints into inverted index
+        fp_rows = [(fp, doc_id) for fp in fingerprints]
+        cursor.executemany(
+            "INSERT INTO fingerprints (fingerprint_hash, document_id) VALUES (?, ?)",
+            fp_rows
+        )
+        
+        conn.commit()
+        conn.close()
+        
+        return {"status": "indexed", "fingerprint_count": len(fingerprints), "doc_id": doc_id}
+    
+    except Exception as e:
+        conn.close()
+        print(f"[FingerprintEngine] Indexing error: {e}")
+        return {"status": "error", "fingerprint_count": 0, "doc_id": doc_id}
+
+
+# ==============================
+# 6. Fingerprint Lookup (O(1) Match)
+# ==============================
+
+def lookup_fingerprints(text: str, top_k: int = 5) -> list[dict]:
+    """
+    The O(1) matching engine.
+    
+    Steps:
+      1. Generate fingerprints from the user's article
+      2. Query the inverted index for matching document IDs
+      3. Count overlapping hashes per document
+      4. Rank by overlap percentage (Jaccard-like similarity)
+    
+    Returns: list of {"doc_id", "url", "content_snippet", "match_count", "similarity"}
+    """
+    user_fingerprints = generate_fingerprints(text)
+    
+    if not user_fingerprints:
+        return []
+    
+    conn = sqlite3.connect(INDEX_DB_PATH)
+    cursor = conn.cursor()
+    
+    try:
+        # Build the IN clause with parameterized placeholders
+        placeholders = ",".join(["?" for _ in user_fingerprints])
+        
+        query = f"""
+            SELECT 
+                f.document_id,
+                d.url,
+                d.content_snippet,
+                COUNT(*) as match_count
+            FROM fingerprints f
+            JOIN indexed_documents d ON f.document_id = d.id
+            WHERE f.fingerprint_hash IN ({placeholders})
+            GROUP BY f.document_id
+            ORDER BY match_count DESC
+            LIMIT ?
+        """
+        
+        cursor.execute(query, user_fingerprints + [top_k])
+        rows = cursor.fetchall()
+        conn.close()
+        
+        total_user_fps = len(user_fingerprints)
+        
+        results = []
+        for row in rows:
+            doc_id, url, snippet, match_count = row
+            # Similarity = overlapping fingerprints / total user fingerprints
+            similarity = round(match_count / total_user_fps, 4) if total_user_fps > 0 else 0
+            results.append({
+                "doc_id": doc_id,
+                "url": url,
+                "content_snippet": snippet,
+                "match_count": match_count,
+                "total_fingerprints": total_user_fps,
+                "similarity": similarity
+            })
+        
+        return results
+    
+    except Exception as e:
+        conn.close()
+        print(f"[FingerprintEngine] Lookup error: {e}")
+        return []
 
 ```
 

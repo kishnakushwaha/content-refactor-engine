@@ -1,8 +1,4 @@
-fastapi
-uvicorn
-python-dotenv
-beautifulsoup4
-lxml
+-r backend/requirements.txt
 openai
 groq
 pydantic

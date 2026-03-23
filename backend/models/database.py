@@ -5,6 +5,10 @@ import uuid
 DB_PATH = os.path.join(os.path.dirname(__file__), '../../database/cre.db')
 
 def init_db():
+    # Make sure the directory actually exists before SQLite tries to open the file!
+    db_dir = os.path.dirname(os.path.abspath(DB_PATH))
+    os.makedirs(db_dir, exist_ok=True)
+    
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 

@@ -4,10 +4,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from api.routes import router as api_router
 from models.database import init_db
+from models.index_db import init_index_tables
 import time
 
-# Initialize DB on boot
+# Initialize DB on boot (WAL mode for concurrent access)
 init_db()
+init_index_tables()
 
 app = FastAPI(title="CRE SaaS MVP")
 
@@ -22,7 +24,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 # Production CORS config
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8000", "https://your-production-domain.com"], # Strict security
+    allow_origins=["*"],  # Allow all origins for MVP; restrict in production
     allow_credentials=True,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],

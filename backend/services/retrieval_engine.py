@@ -186,8 +186,8 @@ def rank_urls(urls, article_text):
 # 5. Adaptive Scraping Controller
 # ==============================
 
-async def adaptive_scrape(urls, max_scrape=15):
-    """Scrapes highest ranked URLs first."""
+async def adaptive_scrape(urls, max_scrape=5):
+    """Scrapes highest ranked URLs first. Limited to 5 for speed."""
     scraped = []
     for url in urls[:max_scrape]:
         try:

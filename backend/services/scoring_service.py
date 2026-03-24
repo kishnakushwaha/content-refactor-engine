@@ -38,14 +38,13 @@ def generate_cre_report(similarity_score: float, analysis: dict) -> dict:
     # ---- LLM-Assessed Scores ----
     idea_score = _level_to_score(analysis.get("idea_similarity", "Medium"))
     risk_score = _level_to_score(analysis.get("plagiarism_risk", "Medium"))
-    value_score = _level_to_score(analysis.get("value_addition", "Medium"), default=50)
-    # Invert value: High value_addition = good = high score
-    value_score = 100 - _level_to_score(analysis.get("value_addition", "Medium"), default=50)
-    if analysis.get("value_addition", "").lower() == "high":
+    value_score = 55  # default medium
+    va = analysis.get("value_addition", "Medium").lower().strip()
+    if va == "high":
         value_score = 85
-    elif analysis.get("value_addition", "").lower() == "medium":
+    elif va == "medium":
         value_score = 55
-    elif analysis.get("value_addition", "").lower() == "low":
+    elif va == "low":
         value_score = 25
     
     llm_originality = _parse_score(analysis.get("originality_score", "50"))

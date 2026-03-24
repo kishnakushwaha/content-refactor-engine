@@ -41,7 +41,7 @@ def _call_openai_compatible(api_url: str, api_key: str, model: str, prompt: str)
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3
     }
-    response = requests.post(api_url, headers=headers, json=payload, timeout=30)
+    response = requests.post(api_url, headers=headers, json=payload, timeout=15)
     response.raise_for_status()
     data = response.json()
     content = data["choices"][0]["message"]["content"]

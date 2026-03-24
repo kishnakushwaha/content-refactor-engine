@@ -54,7 +54,7 @@ async def process_stream(req: Request, payload: ProcessRequest, auth=Depends(aut
         
         while True:
             try:
-                event = await asyncio.wait_for(progress_queue.get(), timeout=120)
+                event = await asyncio.wait_for(progress_queue.get(), timeout=60)
             except asyncio.TimeoutError:
                 yield f"data: {json.dumps({'step': 'timeout', 'message': 'Processing timed out'})}\n\n"
                 break

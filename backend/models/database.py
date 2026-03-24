@@ -11,6 +11,9 @@ def init_db():
     
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    
+    # Enable WAL mode for concurrent read/write support
+    cursor.execute("PRAGMA journal_mode=WAL")
 
     # USERS TABLE
     cursor.execute("""

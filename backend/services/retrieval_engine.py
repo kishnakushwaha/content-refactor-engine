@@ -66,54 +66,63 @@ async def fuse_queries(article_text, semantic_generator):
 async def search_ddg_html(queries):
     """
     Uses DuckDuckGo's HTML endpoint directly.
-    The duckduckgo_search pip library is dead (returns [] for everything).
-    The HTML POST endpoint works reliably.
+    Strict 5s timeout per query to prevent hanging.
     """
     urls = set()
-    headers = {"User-Agent": "Mozilla/5.0"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     
     def _search():
-        import time
-        for q in queries:
+        for q in queries[:3]:  # Max 3 queries
             try:
                 resp = requests.post(
                     "https://html.duckduckgo.com/html/",
                     data={"q": q},
                     headers=headers,
-                    timeout=10
+                    timeout=5  # STRICT 5-second timeout
                 )
                 soup = BeautifulSoup(resp.text, "html.parser")
                 for a in soup.select("a.result__url"):
                     link = a.get("href")
                     if link and link.startswith("http") and is_safe_url(link):
                         urls.add(link)
-                time.sleep(0.5)  # Rate limit protection
             except Exception as e:
-                print(f"DDG HTML error: {e}")
+                print(f"[DDG] Error: {e}")
     
     await asyncio.to_thread(_search)
     return list(urls)
 
 
-async def search_google(queries):
+async def search_google_api(queries):
     """
-    Uses googlesearch-python (scrapes Google).
-    This is the engine that successfully retrieved amanxai.com at 85% similarity.
+    Uses the official Google Custom Search JSON API.
+    This is reliable and won't get IP-blocked like scraping.
+    Falls back gracefully if no API keys are configured.
     """
+    from config import Config
     urls = set()
+    api_key = Config.GOOGLE_API_KEY
+    cx = Config.GOOGLE_CX_ID
+    
+    if not api_key or not cx:
+        print("[Google API] No GOOGLE_API_KEY or GOOGLE_CX_ID configured, skipping")
+        return []
     
     def _search():
-        try:
-            from googlesearch import search
-            for q in queries:
-                try:
-                    for url in search(q, num_results=10, lang="en"):
-                        if is_safe_url(url):
-                            urls.add(url)
-                except Exception as e:
-                    print(f"Google search error on query: {e}")
-        except ImportError:
-            print("googlesearch-python not installed")
+        for q in queries[:3]:  # Max 3 queries
+            try:
+                resp = requests.get(
+                    "https://customsearch.googleapis.com/customsearch/v1",
+                    params={"cx": cx, "q": q, "key": api_key, "num": 7},
+                    timeout=5  # STRICT 5-second timeout
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                for item in data.get("items", []):
+                    link = item.get("link")
+                    if link and is_safe_url(link):
+                        urls.add(link)
+            except Exception as e:
+                print(f"[Google API] Error: {e}")
     
     await asyncio.to_thread(_search)
     return list(urls)
@@ -122,7 +131,7 @@ async def search_google(queries):
 async def search_bing(queries):
     """
     Bing HTML scraper — best-effort fallback.
-    Often CAPTCHA-blocked but worth trying.
+    Strict 5s timeout per query.
     """
     urls = set()
     headers = {
@@ -130,12 +139,12 @@ async def search_bing(queries):
     }
     
     def _search():
-        for q in queries:
+        for q in queries[:3]:  # Max 3 queries
             try:
                 resp = requests.get(
                     f"https://www.bing.com/search?q={q}",
                     headers=headers,
-                    timeout=10
+                    timeout=5  # STRICT 5-second timeout
                 )
                 soup = BeautifulSoup(resp.text, "html.parser")
                 for a in soup.find_all("a", href=True):
@@ -212,7 +221,7 @@ async def retrieve_candidate_sources(article_text, semantic_generator):
 
     results = await asyncio.gather(
         safe_search(search_ddg_html(queries)),
-        safe_search(search_google(queries)),
+        safe_search(search_google_api(queries)),
         safe_search(search_bing(queries))
     )
     

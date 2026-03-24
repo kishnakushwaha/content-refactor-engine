@@ -197,12 +197,26 @@ async def adaptive_scrape(urls, max_scrape=15):
 async def retrieve_candidate_sources(article_text, semantic_generator):
     # Step 1: Query fusion
     queries = await fuse_queries(article_text, semantic_generator)
-    print("\n[RETRIEVAL] Queries:", queries)
+    
+    # CRITICAL FIX: Limit to top 4 queries to prevent infinite hanging and rate limits
+    queries = queries[:4]
+    print("\n[RETRIEVAL] Queries (Limited to 4):", queries)
 
-    # Step 2: Multi-engine search (all run, results merged)
-    ddg_urls = await search_ddg_html(queries)
-    google_urls = await search_google(queries)
-    bing_urls = await search_bing(queries)
+    # Step 2: Multi-engine search (Run CONCURRENTLY with Timeouts)
+    async def safe_search(coro):
+        try:
+            return await asyncio.wait_for(coro, timeout=12.0)
+        except Exception as e:
+            print(f"[RETRIEVAL] Engine timeout/error: {e}")
+            return []
+
+    results = await asyncio.gather(
+        safe_search(search_ddg_html(queries)),
+        safe_search(search_google(queries)),
+        safe_search(search_bing(queries))
+    )
+    
+    ddg_urls, google_urls, bing_urls = results[0], results[1], results[2]
     
     all_urls = list(set(ddg_urls + google_urls + bing_urls))
     print(f"[RETRIEVAL] URLs found: DDG={len(ddg_urls)} Google={len(google_urls)} Bing={len(bing_urls)} Total={len(all_urls)}")

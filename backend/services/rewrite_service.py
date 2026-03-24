@@ -1,12 +1,7 @@
-import google.generativeai as genai
 from config import Config
 import asyncio
 import json
 import requests
-
-genai.configure(api_key=Config.GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.0-flash')
-
 
 def _build_rewrite_prompt(texts: list[str], reference_text: str = None) -> str:
     """Build the reference-aware, SEO-optimized rewrite prompt."""
@@ -59,6 +54,38 @@ def _parse_llm_json(content: str, expected_len: int) -> list[str] | None:
     if isinstance(parsed, list) and len(parsed) == expected_len:
         return [str(item) for item in parsed]
     return None
+
+
+def _rewrite_via_gemini_rest(texts: list[str], reference_text: str = None) -> list[str]:
+    """Gemini 2.0 Flash via standard REST API to avoid SDK freezing."""
+    api_key = Config.GEMINI_API_KEY
+    if not api_key:
+        return texts
+        
+    prompt = _build_rewrite_prompt(texts, reference_text)
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
+    
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"responseMimeType": "application/json"}
+    }
+    
+    for attempt in range(2):
+        try:
+            resp = requests.post(url, headers={"Content-Type": "application/json"}, json=payload, timeout=20)
+            resp.raise_for_status()
+            
+            data = resp.json()
+            content = data["candidates"][0]["content"]["parts"][0]["text"]
+            result = _parse_llm_json(content, len(texts))
+            
+            if result:
+                print("[Rewrite] Gemini REST succeeded")
+                return result
+        except Exception as e:
+            print(f"[Rewrite] Gemini REST error (attempt {attempt+1}): {e}")
+            
+    return texts
 
 
 def _rewrite_via_groq(texts: list[str], reference_text: str = None) -> list[str]:
@@ -129,27 +156,13 @@ async def rewrite_text_nodes(texts: list[str], reference_text: str = None) -> li
     if not texts:
         return []
 
-    prompt = _build_rewrite_prompt(texts, reference_text)
-
-    # Try Gemini first (2 attempts)
-    for attempt in range(2):
-        try:
-            response = await asyncio.to_thread(
-                model.generate_content,
-                prompt,
-                generation_config={"response_mime_type": "application/json"}
-            )
-            
-            result = _parse_llm_json(response.text, len(texts))
-            if result:
-                print("[Rewrite] Gemini succeeded")
-                return result
-            else:
-                print(f"[Rewrite] Gemini length mismatch on attempt {attempt+1}")
-        except Exception as e:
-            print(f"[Rewrite] Gemini error (attempt {attempt+1}): {e}")
-            
-        await asyncio.sleep(2)
+    # Try Gemini REST first
+    try:
+        result = await asyncio.to_thread(_rewrite_via_gemini_rest, texts, reference_text)
+        if result != texts:
+            return result
+    except Exception as e:
+        print(f"[Rewrite] Gemini REST failed: {e}")
     
     # Fallback to Groq
     try:

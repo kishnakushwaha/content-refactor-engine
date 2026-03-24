@@ -1,18 +1,14 @@
-import google.generativeai as genai
+import requests
 from config import Config
 import json
-
-genai.configure(api_key=Config.GEMINI_API_KEY)
-
-# Use Gemini 2.0 Flash — highest free-tier limit (1500 RPD)
-model = genai.GenerativeModel('gemini-2.0-flash')
+import asyncio
 
 async def generate_search_queries(article_text: str, num_queries: int = 3) -> list[str]:
     """
     Extracts the core themes of an article and generates targeted search queries
-    to find similar content on the internet.
+    to find similar content on the internet. Uses the Gemini REST API directly
+    to prevent SDK freezing/hanging issues.
     """
-    # Truncate text just in case it's massive to save tokens
     preview_text = article_text[:2000]
     
     prompt = f"""
@@ -24,17 +20,34 @@ async def generate_search_queries(article_text: str, num_queries: int = 3) -> li
     {preview_text}
     """
     
-    try:
-        import asyncio
-        response = await asyncio.to_thread(
-            model.generate_content,
-            prompt
-        )
-        text_response = response.text.strip().replace("```json", "").replace("```", "")
-        queries = json.loads(text_response)
-        if isinstance(queries, list):
-            return queries
-        return [queries] if isinstance(queries, str) else []
-    except Exception as e:
-        print(f"Error generating queries: {e}")
-        return []
+    def _call_gemini_api():
+        api_key = Config.GEMINI_API_KEY
+        if not api_key:
+            print("[QueryGen] No Gemini API key found")
+            return []
+            
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}]
+        }
+        
+        try:
+            # STRICT 10-second timeout to prevent the pipeline from hanging at 30% forever
+            resp = requests.post(url, headers=headers, json=payload, timeout=10)
+            resp.raise_for_status()
+            
+            data = resp.json()
+            text_response = data["candidates"][0]["content"]["parts"][0]["text"]
+            text_response = text_response.strip().replace("```json", "").replace("```", "")
+            
+            queries = json.loads(text_response)
+            if isinstance(queries, list):
+                return queries
+            return [queries] if isinstance(queries, str) else []
+            
+        except Exception as e:
+            print(f"[QueryGen] REST API error: {e}")
+            return []
+
+    return await asyncio.to_thread(_call_gemini_api)

@@ -38,3 +38,18 @@ def get_daily_usage(user_id: str):
     conn.close()
 
     return result[0] if result[0] else 0
+
+def get_lifetime_usage(user_id: str):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT SUM(requests_count)
+        FROM usage_tracking
+        WHERE user_id=?
+    """, (user_id,))
+
+    result = cursor.fetchone()
+    conn.close()
+
+    return result[0] if result[0] else 0

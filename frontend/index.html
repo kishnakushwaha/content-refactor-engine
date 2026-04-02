@@ -20,9 +20,9 @@
                 <div class="logo-icon"></div>
                 <h1>CRE<span>SaaS</span></h1>
             </div>
-            <div class="api-key-container">
-                <input type="password" id="api-key-input" placeholder="Enter X-API-Key">
-                <div class="status-dot"></div>
+            <div class="auth-container" id="auth-header-container">
+                <span id="user-tier-badge" class="badge">Guest</span>
+                <button id="auth-btn" class="secondary-btn btn-sm">Sign Up Free</button>
             </div>
         </header>
 
@@ -166,7 +166,32 @@
             </div>
         </section>
 
-        <div id="toast-container"></div>
+    <div id="toast-container"></div>
+
+    <!-- Auth Modal -->
+    <div id="auth-modal" class="modal hidden">
+        <div class="modal-content">
+            <span class="close-modal" id="close-auth-modal">&times;</span>
+            <h2>Sign up / Log in</h2>
+            <p>Enter your email to unlock 10 free daily usages and save your history permanently.</p>
+            <div class="input-group">
+                <input type="email" id="auth-email-input" placeholder="you@example.com">
+                <button id="submit-auth-btn" class="primary-btn">Continue</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Upgrade Modal -->
+    <div id="upgrade-modal" class="modal hidden">
+        <div class="modal-content">
+            <span class="close-modal" id="close-upgrade-modal">&times;</span>
+            <h2 id="upgrade-title">Limit Reached</h2>
+            <p id="upgrade-message">You've reached your free usage limit.</p>
+            <div class="upgrade-actions" id="upgrade-actions-container">
+                <!-- Actions injected via JS -->
+            </div>
+        </div>
+    </div>
     </main>
 
     <script src="/app.js"></script>

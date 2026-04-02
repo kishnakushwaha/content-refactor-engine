@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from api.routes import router as api_router
+from api.auth import router as auth_router
 from models.database import init_db
 from models.index_db import init_index_tables
 import time
@@ -57,6 +58,7 @@ async def rate_limit_middleware(request: Request, call_next):
     return response
 
 app.include_router(api_router, prefix="/api")
+app.include_router(auth_router, prefix="/api")
 
 # Serve the frontend statically from the root
 import os
